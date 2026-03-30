@@ -5,6 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Ensure CUDA bin is on PATH if installed but not exported
+for _cuda_bin in /usr/local/cuda/bin /usr/local/cuda-*/bin; do
+    [[ -d "$_cuda_bin" && ":$PATH:" != *":$_cuda_bin:"* ]] && export PATH="$_cuda_bin:$PATH"
+done
+unset _cuda_bin
+
 # ── 1. System packages ────────────────────────────────────────────────────────
 echo "=== Installing system packages ==="
 apt-get update -qq
