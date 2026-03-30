@@ -83,10 +83,11 @@ if [[ ! -d "$VENV_DIR" ]]; then
     echo "venv created at $VENV_DIR"
 fi
 
-echo "=== Installing PyTorch ==="
-if ! "$VENV_DIR/bin/python" -c "import torch" &>/dev/null; then
-    "$VENV_DIR/bin/pip" install --quiet torch --index-url https://download.pytorch.org/whl/cu124
-    echo "PyTorch installed OK"
+echo "=== Installing PyTorch + numpy ==="
+if ! "$VENV_DIR/bin/python" -c "import numpy; import torch; torch.zeros(1, device='cuda')" &>/dev/null 2>&1; then
+    # cu128 wheels support Blackwell (sm_120) and require CUDA 12.8+ driver
+    "$VENV_DIR/bin/pip" install --quiet torch numpy --index-url https://download.pytorch.org/whl/cu128
+    echo "PyTorch + numpy installed OK"
 else
     echo "PyTorch already installed, skipping"
 fi
