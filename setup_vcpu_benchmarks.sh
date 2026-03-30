@@ -14,7 +14,8 @@ apt-get install -y --no-install-recommends \
     gcc \
     make \
     git \
-    python3-pip \
+    python3-venv \
+    python3-full \
     curl
 
 # ── 2. STREAM memory bandwidth benchmark ─────────────────────────────────────
@@ -63,10 +64,17 @@ else
     echo "nccl-tests already present, skipping"
 fi
 
-# ── 5. Python — PyTorch with CUDA ─────────────────────────────────────────────
+# ── 5. Python venv + PyTorch with CUDA ───────────────────────────────────────
+VENV_DIR="$SCRIPT_DIR/.venv"
+echo "=== Setting up Python venv ==="
+if [[ ! -d "$VENV_DIR" ]]; then
+    python3 -m venv "$VENV_DIR"
+    echo "venv created at $VENV_DIR"
+fi
+
 echo "=== Installing PyTorch ==="
-if ! python3 -c "import torch" &>/dev/null; then
-    pip3 install --quiet torch --index-url https://download.pytorch.org/whl/cu124
+if ! "$VENV_DIR/bin/python" -c "import torch" &>/dev/null; then
+    "$VENV_DIR/bin/pip" install --quiet torch --index-url https://download.pytorch.org/whl/cu124
     echo "PyTorch installed OK"
 else
     echo "PyTorch already installed, skipping"

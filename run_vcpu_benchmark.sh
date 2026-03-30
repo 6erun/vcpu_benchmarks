@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # run_vcpu_benchmark.sh — run inside the guest VM
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+
 CONFIG_NAME="${1:?usage: $0 <config_name>}"
 RESULTS_DIR="results/${CONFIG_NAME}"
 mkdir -p "$RESULTS_DIR"
@@ -22,7 +25,7 @@ OMP_NUM_THREADS=$(nproc) ./stream 2>&1 | tee "$RESULTS_DIR/stream.txt"
 ./bandwidthTest --memory=pinned 2>&1 | tee "$RESULTS_DIR/gpu_bandwidth.txt"
 
 # 5. GPU compute
-python3 matmul_bench.py 2>&1 | tee "$RESULTS_DIR/gpu_compute.txt"
+"$PYTHON" matmul_bench.py 2>&1 | tee "$RESULTS_DIR/gpu_compute.txt"
 
 # 6. Multi-GPU (if applicable)
 if [[ $(nvidia-smi -L | wc -l) -gt 1 ]]; then
