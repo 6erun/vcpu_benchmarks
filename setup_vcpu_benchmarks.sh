@@ -43,13 +43,15 @@ if [[ ! -f bandwidthTest ]]; then
         echo "WARNING: nvcc not found — skipping bandwidthTest build (no GPU or CUDA toolkit missing)"
     else
         apt-get install -y --no-install-recommends nvidia-cuda-samples
-        BW_DIR=$(find /usr/share/cuda-samples /usr/local/cuda/samples -type d -name bandwidthTest 2>/dev/null | head -1)
-        if [[ -z "$BW_DIR" ]]; then
-            echo "ERROR: bandwidthTest directory not found after installing nvidia-cuda-samples" >&2
+        # Find the samples root (contains both Samples/ and Common/)
+        SAMPLES_ROOT=$(find /usr/share/doc/nvidia-cuda-toolkit -maxdepth 1 -name examples -type d 2>/dev/null | head -1)
+        if [[ -z "$SAMPLES_ROOT" ]]; then
+            echo "ERROR: cuda samples root not found after installing nvidia-cuda-samples" >&2
             exit 1
         fi
-        make -C "$BW_DIR" -j"$(nproc)"
-        cp "$BW_DIR/bandwidthTest" .
+        cp -r "$SAMPLES_ROOT" /tmp/cuda-samples
+        make -C /tmp/cuda-samples/Samples/1_Utilities/bandwidthTest -j"$(nproc)"
+        cp /tmp/cuda-samples/bin/x86_64/linux/release/bandwidthTest .
         echo "bandwidthTest built OK"
     fi
 else
@@ -62,6 +64,7 @@ if [[ ! -f build/all_reduce_perf ]]; then
     if ! command -v nvcc &>/dev/null; then
         echo "WARNING: nvcc not found — skipping nccl-tests build"
     else
+        apt-get install -y --no-install-recommends libnccl-dev
         git clone --depth 1 https://github.com/NVIDIA/nccl-tests.git
         make -C nccl-tests -j"$(nproc)" CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
         mkdir -p build
