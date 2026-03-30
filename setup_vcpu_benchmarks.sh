@@ -42,12 +42,14 @@ if [[ ! -f bandwidthTest ]]; then
     if ! command -v nvcc &>/dev/null; then
         echo "WARNING: nvcc not found — skipping bandwidthTest build (no GPU or CUDA toolkit missing)"
     else
-        CUDA_SAMPLES_TAG="v$(nvcc --version | grep -oP 'release \K[0-9]+\.[0-9]+')"
-        git clone --depth 1 --branch "$CUDA_SAMPLES_TAG" \
-            https://github.com/NVIDIA/cuda-samples.git cuda-samples 2>/dev/null \
-            || git clone --depth 1 https://github.com/NVIDIA/cuda-samples.git cuda-samples
-        make -C cuda-samples/Samples/1_Utilities/bandwidthTest -j"$(nproc)"
-        cp cuda-samples/Samples/1_Utilities/bandwidthTest/bandwidthTest .
+        apt-get install -y --no-install-recommends nvidia-cuda-samples
+        BW_DIR=$(find /usr/share/cuda-samples /usr/local/cuda/samples -type d -name bandwidthTest 2>/dev/null | head -1)
+        if [[ -z "$BW_DIR" ]]; then
+            echo "ERROR: bandwidthTest directory not found after installing nvidia-cuda-samples" >&2
+            exit 1
+        fi
+        make -C "$BW_DIR" -j"$(nproc)"
+        cp "$BW_DIR/bandwidthTest" .
         echo "bandwidthTest built OK"
     fi
 else
