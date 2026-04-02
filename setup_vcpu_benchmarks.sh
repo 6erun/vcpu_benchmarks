@@ -101,5 +101,9 @@ else
     echo "PyTorch already installed, skipping"
 fi
 
+echo "=== Installing Python dependencies from requirements.txt ==="
+"$VENV_DIR/bin/pip" install --quiet -r "$SCRIPT_DIR/requirements.txt"
+echo "requirements.txt dependencies installed OK"
+
 echo ""
 echo "=== Setup complete. Run: bash run_vcpu_benchmark.sh <config_name> ==="
