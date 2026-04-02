@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `setup_vcpu_benchmarks.sh` — one-time setup script; installs system packages (`numactl`, `sysbench`), builds `stream` and `bandwidthTest`, builds nccl-tests, installs PyTorch. Run as root inside the guest VM.
 - `run_vcpu_benchmark.sh <config_name>` — runs the full benchmark suite and writes results to `results/<config_name>/`. Requires setup to have been run first.
 - `matmul_bench.py` — GPU matrix multiply benchmark using PyTorch (called by `run_vcpu_benchmark.sh`).
+- `generate_report.py` — generates a self-contained HTML report from all `results/<gpu>/<config>/` directories. Requires `matplotlib` and `numpy`. Run with `python3 generate_report.py`; output defaults to `results/report.html`.
 
 ## Benchmark suite
 
