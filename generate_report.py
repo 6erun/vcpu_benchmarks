@@ -55,6 +55,13 @@ class Config:
     nccl_ngpus: int = 0
     nccl_rows: list = field(default_factory=list)  # (size_bytes, busbw_oop)
 
+    # Memory latency (pointer chase)
+    mem_latency_data: list = field(default_factory=list)  # (size_bytes, latency_ns)
+    mem_latency_dram_ns: float = 0.0   # latency at largest tested size (DRAM proxy)
+
+    # System info
+    hugepages_total: int = 0
+
     @property
     def has_nccl(self) -> bool:
         return self.nccl_peak_busbw > 0
@@ -148,6 +155,29 @@ def parse_nccl(text: str, cfg: Config):
         cfg.nccl_avg_busbw = float(m.group(1))
 
 
+def parse_mem_latency(text: str, cfg: Config):
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            try:
+                rows.append((int(parts[0]), float(parts[1])))
+            except ValueError:
+                continue
+    cfg.mem_latency_data = rows
+    if rows:
+        cfg.mem_latency_dram_ns = rows[-1][1]
+
+
+def parse_hugepages(text: str, cfg: Config):
+    m = re.search(r"HugePages_Total:\s+(\d+)", text)
+    if m:
+        cfg.hugepages_total = int(m.group(1))
+
+
 def load_config(path: Path) -> Config:
     gpu = path.parent.name
     name = path.name
@@ -165,6 +195,8 @@ def load_config(path: Path) -> Config:
     parse_gpu_compute(read("gpu_compute.txt"), cfg)
     if (path / "nccl_allreduce.txt").exists():
         parse_nccl(read("nccl_allreduce.txt"), cfg)
+    parse_mem_latency(read("mem_latency.txt"), cfg)
+    parse_hugepages(read("hugepages.txt"), cfg)
 
     return cfg
 
@@ -245,6 +277,41 @@ def stream_grouped_chart(configs, colors):
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
     ax.legend(fontsize=8, framealpha=0.7)
     ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig_to_b64(fig)
+
+
+def mem_latency_chart(configs: list, colors: list):
+    data = [(c, col) for c, col in zip(configs, colors) if c.mem_latency_data]
+    if not data:
+        return None
+
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    xlabels = None
+    for cfg, color in data:
+        sizes, lats = zip(*cfg.mem_latency_data)
+        ax.plot(range(len(sizes)), lats, marker="o", label=cfg.label,
+                color=color, linewidth=2, markersize=5)
+        if xlabels is None:
+            xlabels = []
+            for s in sizes:
+                if s >= 1024 * 1024:
+                    xlabels.append(f"{s // (1024 * 1024)}MB")
+                elif s >= 1024:
+                    xlabels.append(f"{s // 1024}KB")
+                else:
+                    xlabels.append(f"{s}B")
+
+    ax.set_title("Memory Latency — Pointer Chase (lower is better)",
+                 fontsize=11, fontweight="bold", pad=10)
+    ax.set_ylabel("Latency (ns)", fontsize=9)
+    ax.set_xlabel("Array size", fontsize=9)
+    if xlabels:
+        ax.set_xticks(range(len(xlabels)))
+        ax.set_xticklabels(xlabels, rotation=45, ha="right", fontsize=8)
+    ax.legend(fontsize=9, framealpha=0.7)
+    ax.grid(linestyle="--", alpha=0.4)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
     return fig_to_b64(fig)
@@ -351,6 +418,7 @@ def summary_table(configs: list[Config]) -> str:
 {row("CPU single-thread (ev/s)", lambda c: c.cpu_single_evs, "ev/s")}
 {row("CPU multi-thread (ev/s)", lambda c: c.cpu_all_evs, "ev/s")}
 {row("CPU threads", lambda c: c.cpu_all_threads, "", False)}
+{row("Mem latency DRAM (ns)", lambda c: c.mem_latency_dram_ns, "ns", lower_is_better=True)}
 {row("STREAM Copy (MB/s)", lambda c: c.stream_copy, "MB/s")}
 {row("STREAM Triad (MB/s)", lambda c: c.stream_triad, "MB/s")}
 {row("GPU H→D PCIe (GB/s)", lambda c: c.gpu_h2d, "GB/s")}
@@ -369,11 +437,13 @@ def config_table(configs: list[Config]) -> str:
         gpu_badge = f'<span class="badge badge-gpu">{c.gpu_device_name or c.gpu}</span>'
         nccl_badge = f'<span class="badge badge-nccl">{c.nccl_ngpus} GPUs (NCCL)</span>' \
                      if c.has_nccl else ""
+        hp = f'<span class="badge badge-nccl">{c.hugepages_total} hugepages</span>' \
+             if c.hugepages_total > 0 else "—"
         rows += f"<tr><td><b>{c.label}</b></td><td>{gpu_badge} {nccl_badge}</td>" \
-                f"<td>{c.vcpus}</td><td>{c.ram_gb} GB</td></tr>"
+                f"<td>{c.vcpus}</td><td>{c.ram_gb} GB</td><td>{hp}</td></tr>"
     return f"""
 <table>
-<thead><tr><th>Config</th><th>GPU</th><th>vCPUs</th><th>RAM</th></tr></thead>
+<thead><tr><th>Config</th><th>GPU</th><th>vCPUs</th><th>RAM</th><th>Hugepages</th></tr></thead>
 <tbody>{rows}</tbody>
 </table>
 """
@@ -420,6 +490,7 @@ def generate_report(results_dir: Path, output: Path):
         "events/sec/thread", colors)
 
     stream_img = stream_grouped_chart(configs, colors)
+    mem_lat_img = mem_latency_chart(configs, colors)
 
     gpu_pcie_img = bar_chart(
         "GPU PCIe Bandwidth — Host↔Device", labels,
@@ -454,9 +525,10 @@ def generate_report(results_dir: Path, output: Path):
                     f"<td>{cfg.nccl_peak_busbw:.2f} GB/s</td>" \
                     f"<td>{cfg.nccl_avg_busbw:.2f} GB/s</td></tr>"
         charts = "".join(img_tag(img, cfg.label) for cfg, img in nccl_imgs)
+        section_num = 7 if mem_lat_img else 6
         nccl_section = f"""
 <div class="section">
-  <h2>5. NCCL AllReduce</h2>
+  <h2>{section_num}. NCCL AllReduce</h2>
   <table>
     <thead><tr><th>Config</th><th>GPUs</th><th>Peak Bus BW</th><th>Avg Bus BW</th></tr></thead>
     <tbody>{rows}</tbody>
@@ -499,15 +571,17 @@ Results directory: <code>{results_dir.resolve()}</code></p>
   </div>
 </div>
 
+{'<div class="section"><h2>2. Memory Latency — Pointer Chase</h2><div class="charts">' + img_tag(mem_lat_img, "Memory latency") + '</div><p class="note">Random pointer-chase through arrays of increasing size. Plateau regions reveal L1/L2/L3 cache and DRAM latency. Lower is better.</p></div>' if mem_lat_img else ''}
+
 <div class="section">
-  <h2>2. Memory Bandwidth — STREAM</h2>
+  <h2>{'3' if mem_lat_img else '2'}. Memory Bandwidth — STREAM</h2>
   <div class="charts">
     {img_tag(stream_img, "STREAM")}
   </div>
 </div>
 
 <div class="section">
-  <h2>3. GPU ↔ CPU Memory Bandwidth (CUDA bandwidthTest)</h2>
+  <h2>{'4' if mem_lat_img else '3'}. GPU ↔ CPU Memory Bandwidth (CUDA bandwidthTest)</h2>
   <div class="charts">
     {img_tag(gpu_pcie_img, "GPU PCIe BW")}
     {img_tag(gpu_d2d_img, "GPU D2D BW")}
@@ -515,7 +589,7 @@ Results directory: <code>{results_dir.resolve()}</code></p>
 </div>
 
 <div class="section">
-  <h2>4. GPU Compute — MatMul (4096×4096 FP32, 100 iterations)</h2>
+  <h2>{'5' if mem_lat_img else '4'}. GPU Compute — MatMul (4096×4096 FP32, 100 iterations)</h2>
   <div class="charts">
     {img_tag(gpu_matmul_img, "GPU matmul")}
   </div>

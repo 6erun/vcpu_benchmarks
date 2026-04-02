@@ -36,7 +36,16 @@ else
     echo "STREAM already built, skipping"
 fi
 
-# ── 3. CUDA bandwidthTest ─────────────────────────────────────────────────────
+# ── 3. Memory latency benchmark ──────────────────────────────────────────────
+echo "=== Building mem_latency ==="
+if [[ ! -f mem_latency ]]; then
+    gcc -O2 -o mem_latency mem_latency.c
+    echo "mem_latency built OK"
+else
+    echo "mem_latency already built, skipping"
+fi
+
+# ── 4. CUDA bandwidthTest ─────────────────────────────────────────────────────
 echo "=== Building CUDA bandwidthTest ==="
 if [[ ! -f bandwidthTest ]]; then
     if ! command -v nvcc &>/dev/null; then
@@ -58,7 +67,7 @@ else
     echo "bandwidthTest already present, skipping"
 fi
 
-# ── 4. NCCL tests (all_reduce_perf) ──────────────────────────────────────────
+# ── 5. NCCL tests (all_reduce_perf) ──────────────────────────────────────────
 echo "=== Building nccl-tests ==="
 if [[ ! -f build/all_reduce_perf ]]; then
     if ! command -v nvcc &>/dev/null; then
@@ -75,7 +84,7 @@ else
     echo "nccl-tests already present, skipping"
 fi
 
-# ── 5. Python venv + PyTorch with CUDA ───────────────────────────────────────
+# ── 6. Python venv + PyTorch with CUDA ───────────────────────────────────────
 VENV_DIR="$SCRIPT_DIR/.venv"
 echo "=== Setting up Python venv ==="
 if [[ ! -d "$VENV_DIR" ]]; then
