@@ -392,20 +392,28 @@ def pct(val, ref):
 
 
 def summary_table(configs: list[Config]) -> str:
-    ref = configs[0]
+    # Build a per-GPU baseline map: first config index seen for each gpu name.
+    gpu_baseline: dict[str, int] = {}
+    for i, c in enumerate(configs):
+        if c.gpu not in gpu_baseline:
+            gpu_baseline[c.gpu] = i
 
     def row(label, getter, unit, lower_is_better=False):
         vals = [getter(c) for c in configs]
-        best_i = min(range(len(vals)), key=lambda i: vals[i]) if lower_is_better \
-                 else max(range(len(vals)), key=lambda i: vals[i])
+        nonzero = [v for v in vals if v != 0]
+        best_i = None
+        if nonzero:
+            best_val = min(nonzero) if lower_is_better else max(nonzero)
+            best_i = next(i for i, v in enumerate(vals) if v == best_val)
         cells = ""
         for i, (c, v) in enumerate(zip(configs, vals)):
             if v == 0:
                 cells += "<td>—</td>"
                 continue
-            ref_v = vals[0]
+            ref_i = gpu_baseline[c.gpu]
+            ref_v = vals[ref_i]
             delta = pct(v if not lower_is_better else -v,
-                        ref_v if not lower_is_better else -ref_v) if i > 0 else ""
+                        ref_v if not lower_is_better else -ref_v) if i != ref_i else ""
             cls = ' class="best"' if i == best_i else ""
             cells += f"<td{cls}>{v:,.1f} {unit}{delta}</td>"
         return f"<tr><td><b>{label}</b></td>{cells}</tr>"
@@ -548,7 +556,7 @@ def generate_report(results_dir: Path, output: Path):
 <body>
 <h1>vCPU Benchmark Report</h1>
 <p class="meta">Generated: {today} &nbsp;|&nbsp; {len(configs)} configuration(s) &nbsp;|&nbsp;
-Results directory: <code>{results_dir.resolve()}</code></p>
+</p>
 
 <div class="section">
   <h2>Configurations</h2>
@@ -558,8 +566,9 @@ Results directory: <code>{results_dir.resolve()}</code></p>
 <div class="section">
   <h2>Summary</h2>
   {summary_table(configs)}
-  <p class="note">Bold green = best value in row. Percentages relative to first config.
-  Lower is better for matmul latency.</p>
+  <p class="note">Bold green = best value in row. Percentages relative to the first config
+  within the same GPU — configs on different GPUs have no percentage shown.
+  Lower is better for matmul latency and memory latency.</p>
 </div>
 
 <div class="section">
@@ -601,8 +610,18 @@ Results directory: <code>{results_dir.resolve()}</code></p>
 </html>
 """
 
-    output.write_text(html)
-    print(f"Report written to: {output.resolve()}")
+    if output.suffix.lower() == ".pdf":
+        try:
+            import weasyprint
+        except ImportError:
+            print("ERROR: weasyprint is required for PDF output.\n"
+                  "Install it with: pip install weasyprint", file=sys.stderr)
+            sys.exit(1)
+        weasyprint.HTML(string=html).write_pdf(output)
+        print(f"PDF report written to: {output.resolve()}")
+    else:
+        output.write_text(html)
+        print(f"Report written to: {output.resolve()}")
 
 
 if __name__ == "__main__":
