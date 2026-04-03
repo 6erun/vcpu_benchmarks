@@ -72,7 +72,38 @@ elif [[ "$GPU_VENDOR" == "amd" ]]; then
 fi
 
 # 7. Multi-GPU collective bandwidth
+# -w 10   : warmup iterations (covers NCCL connection setup + GPU clock ramp)
+# -n 100  : timed iterations (reduces variance especially at small message sizes)
+# -e 1G   : large max message ensures true PCIe/NVLink plateau is reached
+# NCCL_ALGO/PROTO: pin to Ring+Simple for reproducible large-message results
 if [[ "${GPU_COUNT:-0}" -gt 1 ]]; then
-    ./build/all_reduce_perf -b 8 -e 256M -f 2 -g "$GPU_COUNT" \
+    # Detect NUMA node of GPU 0 via its PCIe sysfs entry.
+    # /sys/bus/pci/devices/<bdf>/numa_node is -1 on non-NUMA or single-node systems.
+    _gpu_numa_node() {
+        local bdf=""
+        if [[ "$GPU_VENDOR" == "nvidia" ]]; then
+            bdf=$(nvidia-smi --query-gpu=pci.bus_id --format=csv,noheader \
+                  2>/dev/null | head -1 | tr '[:upper:]' '[:lower:]')
+        elif [[ "$GPU_VENDOR" == "amd" ]]; then
+            bdf=$(rocm-smi --showbus 2>/dev/null \
+                  | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | head -1)
+        fi
+        local node=-1
+        if [[ -n "$bdf" ]]; then
+            node=$(cat "/sys/bus/pci/devices/${bdf}/numa_node" 2>/dev/null || echo -1)
+        fi
+        # Fall back to 0 when NUMA info is unavailable or single-node system
+        [[ "$node" -lt 0 ]] && node=0
+        echo "$node"
+    }
+    NUMA_NODE=$(_gpu_numa_node)
+    echo "=== NCCL/RCCL: binding to NUMA node ${NUMA_NODE} ==="
+
+    NCCL_ALGO=Ring NCCL_PROTO=Simple \
+    numactl --cpunodebind="$NUMA_NODE" --membind="$NUMA_NODE" \
+        ./build/all_reduce_perf \
+            -b 8 -e 1G -f 2 \
+            -g "$GPU_COUNT" \
+            -w 10 -n 100 \
         2>&1 | tee "$RESULTS_DIR/nccl_allreduce.txt"
 fi
