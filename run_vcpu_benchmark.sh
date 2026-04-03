@@ -4,7 +4,17 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 
-CONFIG_NAME="${1:?usage: $0 <config_name>}"
+CONFIG_NAME="${1:?usage: $0 <config_name> [--nccl-max-msg SIZE]}"
+NCCL_MAX_MSG="1G"
+
+shift
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --nccl-max-msg) NCCL_MAX_MSG="$2"; shift 2 ;;
+        *) echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
 RESULTS_DIR="results/${CONFIG_NAME}"
 mkdir -p "$RESULTS_DIR"
 
@@ -102,7 +112,7 @@ if [[ "${GPU_COUNT:-0}" -gt 1 ]]; then
     NCCL_ALGO=Ring NCCL_PROTO=Simple \
     numactl --cpunodebind="$NUMA_NODE" --membind="$NUMA_NODE" \
         ./build/all_reduce_perf \
-            -b 8 -e 1G -f 2 \
+            -b 8 -e "$NCCL_MAX_MSG" -f 2 \
             -g "$GPU_COUNT" \
             -w 10 -n 100 \
         2>&1 | tee "$RESULTS_DIR/nccl_allreduce.txt"
