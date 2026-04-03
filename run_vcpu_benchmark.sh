@@ -49,15 +49,27 @@ if [[ -x ./mem_latency ]]; then
     ./mem_latency 2>&1 | tee "$RESULTS_DIR/mem_latency.txt"
 fi
 
-# 5. GPU bandwidth
-if [[ "$GPU_VENDOR" == "nvidia" ]]; then
-    ./bandwidthTest --memory=pinned 2>&1 | tee "$RESULTS_DIR/gpu_bandwidth.txt"
-elif [[ "$GPU_VENDOR" == "amd" ]]; then
-    rocm-bandwidth-test 2>&1 | tee "$RESULTS_DIR/gpu_bandwidth.txt"
-fi
-
-# 6. GPU compute
+# 5. GPU compute (run before bandwidth to warm GPU to operating temperature)
 "$PYTHON" matmul_bench.py 2>&1 | tee "$RESULTS_DIR/gpu_compute.txt"
+
+# 6. GPU bandwidth — 5 iterations, all runs saved; report parser takes the best
+# GPU is already warm from matmul; multiple runs guard against PCIe/boost variance.
+GPU_BW_RUNS=5
+if [[ "$GPU_VENDOR" == "nvidia" ]]; then
+    {
+        for _i in $(seq 1 $GPU_BW_RUNS); do
+            echo "# run ${_i}"
+            ./bandwidthTest --memory=pinned 2>&1
+        done
+    } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
+elif [[ "$GPU_VENDOR" == "amd" ]]; then
+    {
+        for _i in $(seq 1 $GPU_BW_RUNS); do
+            echo "# run ${_i}"
+            rocm-bandwidth-test 2>&1
+        done
+    } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
+fi
 
 # 7. Multi-GPU collective bandwidth
 if [[ "${GPU_COUNT:-0}" -gt 1 ]]; then

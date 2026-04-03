@@ -110,27 +110,27 @@ def _parse_gpu_bandwidth_cuda(text: str, cfg: Config):
     m = re.search(r"Device \d+: (.+)", text)
     if m:
         cfg.gpu_device_name = m.group(1).strip()
+    # File may contain multiple runs (one per "# run N" block) — take best across all
     sections = re.split(r"(Host to Device|Device to Host|Device to Device)", text)
-    mapping = {}
+    mapping: dict[str, float] = {}
     for i in range(1, len(sections), 2):
         label = sections[i]
         body = sections[i + 1]
         bw_match = re.search(r"\d+\s+([\d.]+)\s*$", body.strip(), re.MULTILINE)
         if bw_match:
-            mapping[label] = float(bw_match.group(1))
+            bw = float(bw_match.group(1))
+            mapping[label] = max(mapping.get(label, 0.0), bw)
     cfg.gpu_h2d = mapping.get("Host to Device", 0.0)
     cfg.gpu_d2h = mapping.get("Device to Host", 0.0)
     cfg.gpu_d2d = mapping.get("Device to Device", 0.0)
 
 
 def _parse_gpu_bandwidth_rocm(text: str, cfg: Config):
-    # Device name from summary matrix header or first GPU mention
     m = re.search(r"Device\s+\d+\s*[:\-]\s*(.+)", text)
     if m:
         cfg.gpu_device_name = m.group(1).strip()
 
-    # Split into per-pair blocks; each block has Src/Dst Device Type lines
-    # and a table of Data Size / Peak BW(GB/s) — we take the last (largest) row.
+    # File may contain multiple runs — take best across all blocks
     blocks = re.split(r"={4,}.*?Benchmark Result.*?={4,}", text)
     for block in blocks:
         src_m = re.search(r"Src Device Type:\s*(\w+)", block)
@@ -139,7 +139,7 @@ def _parse_gpu_bandwidth_rocm(text: str, cfg: Config):
             continue
         src, dst = src_m.group(1).lower(), dst_m.group(1).lower()
 
-        # Peak BW is the last column; grab the last data row
+        # Peak BW is the last column; grab the last (largest message size) row
         bw_vals = re.findall(r"[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)", block)
         if not bw_vals:
             continue
