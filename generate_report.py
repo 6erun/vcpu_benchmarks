@@ -380,6 +380,43 @@ def nccl_chart(cfg: Config, color: str):
     return fig_to_b64(fig)
 
 
+def nccl_overlay_chart(configs: list, colors: list):
+    data = [(c, col) for c, col in zip(configs, colors) if c.nccl_rows]
+    if not data:
+        return None
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    xlabels = None
+    for cfg, color in data:
+        sizes, bws = zip(*cfg.nccl_rows)
+        ax.plot(range(len(bws)), bws, marker="o", label=cfg.label,
+                color=color, linewidth=2, markersize=5)
+        ax.axhline(cfg.nccl_avg_busbw, linestyle="--", color=color,
+                   linewidth=1, alpha=0.5)
+        if xlabels is None:
+            xlabels = []
+            for s in sizes:
+                if s >= 1024 * 1024:
+                    xlabels.append(f"{s // (1024*1024)}M")
+                elif s >= 1024:
+                    xlabels.append(f"{s // 1024}K")
+                else:
+                    xlabels.append(str(s))
+
+    ax.set_title("NCCL AllReduce Bus Bandwidth — All Configs",
+                 fontsize=11, fontweight="bold", pad=10)
+    ax.set_ylabel("Bus BW (GB/s)", fontsize=9)
+    ax.set_xlabel("Message size", fontsize=9)
+    if xlabels:
+        ax.set_xticks(range(len(xlabels)))
+        ax.set_xticklabels(xlabels, rotation=45, ha="right", fontsize=8)
+    ax.legend(fontsize=9, framealpha=0.7)
+    ax.grid(linestyle="--", alpha=0.4)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig_to_b64(fig)
+
+
 # ---------------------------------------------------------------------------
 # HTML helpers
 # ---------------------------------------------------------------------------
@@ -510,7 +547,7 @@ def generate_report(results_dir: Path, output: Path):
         print("No configs found.", file=sys.stderr)
         sys.exit(1)
 
-    colors = PALETTE[: len(configs)]
+    colors = [PALETTE[i % len(PALETTE)] for i in range(len(configs))]
     labels = [c.label for c in configs]
 
     print(f"Found {len(configs)} config(s): {', '.join(labels)}")
@@ -545,6 +582,7 @@ def generate_report(results_dir: Path, output: Path):
         [c.gpu_matmul_ms for c in configs], "ms/matmul", colors,
         highlight_max=False, highlight_min=True)
 
+    nccl_overlay_img = nccl_overlay_chart(configs, colors)
     nccl_imgs = []
     for cfg, color in zip(configs, colors):
         if cfg.has_nccl:
@@ -557,14 +595,19 @@ def generate_report(results_dir: Path, output: Path):
     today = date.today().isoformat()
 
     nccl_section = ""
-    if nccl_imgs:
+    if any(c.has_nccl for c in configs):
         rows = ""
-        for cfg, _ in nccl_imgs:
-            rows += f"<tr><td><b>{cfg.label}</b></td>" \
-                    f"<td>{cfg.nccl_ngpus}</td>" \
-                    f"<td>{cfg.nccl_peak_busbw:.2f} GB/s</td>" \
-                    f"<td>{cfg.nccl_avg_busbw:.2f} GB/s</td></tr>"
-        charts = "".join(img_tag(img, cfg.label) for cfg, img in nccl_imgs)
+        for cfg in configs:
+            if cfg.has_nccl:
+                rows += f"<tr><td><b>{cfg.label}</b></td>" \
+                        f"<td>{cfg.nccl_ngpus}</td>" \
+                        f"<td>{cfg.nccl_peak_busbw:.2f} GB/s</td>" \
+                        f"<td>{cfg.nccl_avg_busbw:.2f} GB/s</td></tr>"
+            else:
+                rows += f"<tr><td><b>{cfg.label}</b></td>" \
+                        f"<td>—</td><td>—</td><td>—</td></tr>"
+        overlay = img_tag(nccl_overlay_img, "NCCL overlay") if nccl_overlay_img else ""
+        charts = overlay + "".join(img_tag(img, cfg.label) for cfg, img in nccl_imgs)
         section_num = 7 if mem_lat_img else 6
         nccl_section = f"""
 <div class="section">
@@ -573,7 +616,7 @@ def generate_report(results_dir: Path, output: Path):
     <thead><tr><th>Config</th><th>GPUs</th><th>Peak Bus BW</th><th>Avg Bus BW</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
-  <p class="note">float32 sum, out-of-place, message sizes 8B–256MB</p>
+  <p class="note">float32 sum, out-of-place, message sizes 8B–1G. Configs with a single GPU do not run this test (—).</p>
   <div class="charts" style="margin-top:16px">{charts}</div>
 </div>
 """
