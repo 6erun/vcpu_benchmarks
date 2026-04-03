@@ -160,21 +160,7 @@ shows whether hugepages reduced TLB-miss overhead in the L3-to-DRAM transition z
 
 ---
 
-### 5. GPU ↔ CPU memory bandwidth — `bandwidthTest`
-
-Tests pinned memory transfers in both directions (host→device, device→host) and device-to-device
-bandwidth (GPU internal) using CUDA's bandwidthTest sample.
-
-**Why it matters for vCPU configs:** Host↔device bandwidth is limited by PCIe (typically
-25–60 GB/s on PCIe 4.0/5.0 ×16). Inside a VM the GPU is passed through via VFIO. If the vCPUs
-are pinned to a NUMA node that is not the one closest to the GPU's PCIe root complex, the
-CPU-side staging buffers used for DMA will be remote, degrading transfer bandwidth. Device-to-device
-bandwidth is internal to the GPU and should be unaffected by vCPU configuration — a stable
-value here confirms GPU passthrough is working correctly and acts as a control.
-
----
-
-### 6. GPU compute — `matmul_bench.py`
+### 5. GPU compute — `matmul_bench.py`
 
 Runs 100 iterations of an 8192×8192 FP32 matrix multiply on the GPU using PyTorch, after a
 10-iteration warmup. Reports average milliseconds per operation.
@@ -186,18 +172,37 @@ largely independent of vCPU configuration (once the GPU is warmed up), so it ser
 changes. Variation here suggests CPU-side interference — bottlenecked kernel launches,
 PCIe contention, or power/thermal throttling triggered by the CPU benchmark tests run earlier.
 
+This test runs **before** the bandwidth test so the GPU is already at operating temperature
+when PCIe transfers are measured.
+
 ---
 
-### 7. Multi-GPU collective bandwidth — `all_reduce_perf` (NCCL)
+### 6. GPU ↔ CPU memory bandwidth — `bandwidthTest` (NVIDIA) / `rocm-bandwidth-test` (AMD)
+
+Tests pinned memory transfers in both directions (host→device, device→host) and device-to-device
+bandwidth (GPU internal). Runs **5 times**; the report takes the best result across all runs to
+guard against PCIe variance and GPU boost ramp-up on the first transfer.
+
+**Why it matters for vCPU configs:** Host↔device bandwidth is limited by PCIe (typically
+25–60 GB/s on PCIe 4.0/5.0 ×16). Inside a VM the GPU is passed through via VFIO. If the vCPUs
+are pinned to a NUMA node that is not the one closest to the GPU's PCIe root complex, the
+CPU-side staging buffers used for DMA will be remote, degrading transfer bandwidth. Device-to-device
+bandwidth is internal to the GPU and should be unaffected by vCPU configuration — a stable
+value here confirms GPU passthrough is working correctly and acts as a control.
+
+---
+
+### 7. Multi-GPU collective bandwidth — `all_reduce_perf` (NCCL / RCCL)
 
 Runs an AllReduce collective (float32 sum) across all GPUs in the guest, sweeping message
 sizes from 8 B to 256 MB. Reports algorithmic and bus bandwidth at each size. Only runs when
-more than one GPU is present.
+more than one GPU is present. Uses NCCL on NVIDIA and RCCL on AMD — both produce identical
+output format.
 
 **Why it matters:** AllReduce is the dominant communication primitive in distributed deep
 learning (gradient synchronization). The bandwidth at large message sizes (≥8 MB) reflects
 effective inter-GPU bandwidth, limited by NVLink (if present) or PCIe topology. vCPU placement
-matters because the CPU orchestrates NCCL operations — if the vCPUs are on a different NUMA
-node than the GPUs' PCIe attachment, coordination overhead increases latency at small message
-sizes, raising the point at which bandwidth saturates. The average bus bandwidth across all
-sizes is a useful single-number summary of collective performance.
+matters because the CPU orchestrates NCCL/RCCL operations — if the vCPUs are on a different
+NUMA node than the GPUs' PCIe attachment, coordination overhead increases latency at small
+message sizes, raising the point at which bandwidth saturates. The average bus bandwidth across
+all sizes is a useful single-number summary of collective performance.

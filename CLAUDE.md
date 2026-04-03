@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Scripts
 
-- `setup_vcpu_benchmarks.sh` — one-time setup script; installs system packages (`numactl`, `sysbench`), builds `stream` and `bandwidthTest`, builds nccl-tests, installs PyTorch. Run as root inside the guest VM.
+- `setup_vcpu_benchmarks.sh` — one-time setup script; installs system packages, builds `stream` and `mem_latency`, and auto-detects GPU vendor (NVIDIA or AMD) to install the appropriate tools: `bandwidthTest` or `rocm-bandwidth-test`, nccl-tests or rccl-tests, and CUDA or ROCm PyTorch wheels. Run as root inside the guest VM.
 - `run_vcpu_benchmark.sh <config_name>` — runs the full benchmark suite and writes results to `results/<config_name>/`. Requires setup to have been run first.
 - `matmul_bench.py` — GPU matrix multiply benchmark using PyTorch (called by `run_vcpu_benchmark.sh`).
 - `generate_report.py` — generates a self-contained HTML report from all `results/<gpu>/<config>/` directories. Requires `matplotlib` and `numpy`. Run with `python3 generate_report.py`; output defaults to `results/report.html`.
@@ -22,9 +22,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 3 | `stream` (OpenMP) | Memory bandwidth |
 | 3a | `stream` via `numactl --membind` | Per-NUMA-node memory bandwidth (multi-NUMA only) |
 | 4 | `mem_latency` (pointer chase) | Memory latency vs array size (L1/L2/L3/DRAM tiers) |
-| 5 | `bandwidthTest` (CUDA samples) | GPU↔CPU memory bandwidth |
-| 6 | `matmul_bench.py` (PyTorch) | GPU compute (matmul) |
-| 7 | `all_reduce_perf` (nccl-tests) | Multi-GPU collective bandwidth |
+| 5 | `matmul_bench.py` (PyTorch) | GPU compute (matmul) — run first to warm GPU |
+| 6 | `bandwidthTest` / `rocm-bandwidth-test` | GPU↔CPU memory bandwidth (5 runs, best kept) |
+| 7 | `all_reduce_perf` (nccl-tests / rccl-tests) | Multi-GPU collective bandwidth |
 
 ## Results layout
 
