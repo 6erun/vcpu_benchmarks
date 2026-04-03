@@ -100,25 +100,57 @@ def parse_stream(text: str, cfg: Config):
 
 
 def parse_gpu_bandwidth(text: str, cfg: Config):
+    if "RocmBandwidthTest" in text or "Src Device Type" in text:
+        _parse_gpu_bandwidth_rocm(text, cfg)
+    else:
+        _parse_gpu_bandwidth_cuda(text, cfg)
+
+
+def _parse_gpu_bandwidth_cuda(text: str, cfg: Config):
     m = re.search(r"Device \d+: (.+)", text)
     if m:
         cfg.gpu_device_name = m.group(1).strip()
-    cfg.gpu_h2d = _first(r"Host to Device.*?(\d+\.\d+)\s*$", text, flags=re.S) or 0.0
-    cfg.gpu_d2h = _first(r"Device to Host.*?(\d+\.\d+)\s*$", text, flags=re.S) or 0.0
-    cfg.gpu_d2d = _first(r"Device to Device.*?(\d+\.\d+)\s*$", text, flags=re.S) or 0.0
-
-    # More robust: grab all bandwidth values per section
     sections = re.split(r"(Host to Device|Device to Host|Device to Device)", text)
     mapping = {}
     for i in range(1, len(sections), 2):
         label = sections[i]
         body = sections[i + 1]
-        bw_match = re.search(r"(\d+)\s+([\d.]+)\s*$", body.strip(), re.MULTILINE)
+        bw_match = re.search(r"\d+\s+([\d.]+)\s*$", body.strip(), re.MULTILINE)
         if bw_match:
-            mapping[label] = float(bw_match.group(2))
-    cfg.gpu_h2d = mapping.get("Host to Device", cfg.gpu_h2d)
-    cfg.gpu_d2h = mapping.get("Device to Host", cfg.gpu_d2h)
-    cfg.gpu_d2d = mapping.get("Device to Device", cfg.gpu_d2d)
+            mapping[label] = float(bw_match.group(1))
+    cfg.gpu_h2d = mapping.get("Host to Device", 0.0)
+    cfg.gpu_d2h = mapping.get("Device to Host", 0.0)
+    cfg.gpu_d2d = mapping.get("Device to Device", 0.0)
+
+
+def _parse_gpu_bandwidth_rocm(text: str, cfg: Config):
+    # Device name from summary matrix header or first GPU mention
+    m = re.search(r"Device\s+\d+\s*[:\-]\s*(.+)", text)
+    if m:
+        cfg.gpu_device_name = m.group(1).strip()
+
+    # Split into per-pair blocks; each block has Src/Dst Device Type lines
+    # and a table of Data Size / Peak BW(GB/s) — we take the last (largest) row.
+    blocks = re.split(r"={4,}.*?Benchmark Result.*?={4,}", text)
+    for block in blocks:
+        src_m = re.search(r"Src Device Type:\s*(\w+)", block)
+        dst_m = re.search(r"Dst Device Type:\s*(\w+)", block)
+        if not src_m or not dst_m:
+            continue
+        src, dst = src_m.group(1).lower(), dst_m.group(1).lower()
+
+        # Peak BW is the last column; grab the last data row
+        bw_vals = re.findall(r"[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)", block)
+        if not bw_vals:
+            continue
+        peak_bw = float(bw_vals[-1])
+
+        if src == "cpu" and dst == "gpu":
+            cfg.gpu_h2d = max(cfg.gpu_h2d, peak_bw)
+        elif src == "gpu" and dst == "cpu":
+            cfg.gpu_d2h = max(cfg.gpu_d2h, peak_bw)
+        elif src == "gpu" and dst == "gpu":
+            cfg.gpu_d2d = max(cfg.gpu_d2d, peak_bw)
 
 
 def parse_gpu_compute(text: str, cfg: Config):
