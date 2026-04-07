@@ -129,12 +129,24 @@ if [[ "$GPU_VENDOR" == "nvidia" ]]; then
         done
     } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
 elif [[ "$GPU_VENDOR" == "amd" ]]; then
-    {
-        for _i in $(seq 1 $GPU_BW_RUNS); do
-            echo "# run ${_i}"
-            rocm-bandwidth-test 2>&1
-        done
-    } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
+    # rocm-bandwidth-test / TransferBench crash on some AMD GPU generations (e.g. MI350X).
+    # Fall back to gpu_bandwidth_bench.py which uses PyTorch/HIP directly.
+    if command -v rocm-bandwidth-test &>/dev/null && \
+       rocm-bandwidth-test 2>&1 | grep -q "GB/s"; then
+        {
+            for _i in $(seq 1 $GPU_BW_RUNS); do
+                echo "# run ${_i}"
+                rocm-bandwidth-test 2>&1
+            done
+        } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
+    else
+        {
+            for _i in $(seq 1 $GPU_BW_RUNS); do
+                echo "# run ${_i}"
+                "$PYTHON" "$SCRIPT_DIR/gpu_bandwidth_bench.py" 2>&1
+            done
+        } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
+    fi
 fi
 
 # 7. Multi-GPU collective bandwidth

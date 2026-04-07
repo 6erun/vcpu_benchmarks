@@ -77,13 +77,10 @@ if [[ "$GPU_VENDOR" == "nvidia" ]]; then
     fi
 
 elif [[ "$GPU_VENDOR" == "amd" ]]; then
-    echo "=== Installing rocm-bandwidth-test ==="
-    if [[ ! -x "$(command -v rocm-bandwidth-test)" ]]; then
+    echo "=== Installing rocm-bandwidth-test + transferbench-dev ==="
+    apt-get install -y --no-install-recommends rocm-bandwidth-test transferbench-dev 2>/dev/null || \
         apt-get install -y --no-install-recommends rocm-bandwidth-test
-        echo "rocm-bandwidth-test installed OK"
-    else
-        echo "rocm-bandwidth-test already present, skipping"
-    fi
+    echo "rocm-bandwidth-test installed OK"
 fi
 
 # ── 5. Collective bandwidth test (NCCL / RCCL) ───────────────────────────────
@@ -139,10 +136,11 @@ if ! "$VENV_DIR/bin/python" -c "import torch; torch.zeros(1, device='cuda')" &>/
         "$VENV_DIR/bin/pip" install --quiet torch numpy \
             --index-url https://download.pytorch.org/whl/cu128
     elif [[ "$GPU_VENDOR" == "amd" ]]; then
-        # ROCm PyTorch — maps device('cuda') to ROCm internally
-        # rocm6.3+ required for MI350 (gfx950) and later AMD GPUs
-        "$VENV_DIR/bin/pip" install --quiet torch numpy \
-            --index-url https://download.pytorch.org/whl/rocm6.3
+        # ROCm PyTorch — maps device('cuda') to ROCm internally.
+        # rocm7.0 nightly required for MI350X (gfx950) support; stable rocm6.x wheels
+        # only cover up to gfx942 (MI300X).
+        "$VENV_DIR/bin/pip" install --quiet --pre torch numpy \
+            --index-url https://download.pytorch.org/whl/nightly/rocm7.0
     else
         "$VENV_DIR/bin/pip" install --quiet torch numpy
     fi
