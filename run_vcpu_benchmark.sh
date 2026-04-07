@@ -25,7 +25,7 @@ if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null 2>&1; then
     GPU_COUNT=$(nvidia-smi -L | wc -l)
 elif command -v rocm-smi &>/dev/null && rocm-smi &>/dev/null 2>&1; then
     GPU_VENDOR="amd"
-    GPU_COUNT=$(rocm-smi --showid 2>/dev/null | grep -c "GPU\[" || echo 1)
+    GPU_COUNT=$(rocm-smi --showid 2>/dev/null | grep -oP 'GPU\[\K\d+(?=\])' | sort -un | wc -l)
 fi
 
 echo "=== Config: $CONFIG_NAME ==="
