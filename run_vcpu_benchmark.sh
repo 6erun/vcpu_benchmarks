@@ -36,6 +36,57 @@ numactl --hardware > "$RESULTS_DIR/numa_topology.txt"
 lscpu             > "$RESULTS_DIR/cpu_topology.txt"
 grep -i huge /proc/meminfo > "$RESULTS_DIR/hugepages.txt"
 
+NUMA_NODES=$(numactl --hardware | awk '/^available:/{print $2}')
+
+# ── metadata.json — machine-readable run context ──────────────────────────────
+GPU_VENDOR="$GPU_VENDOR" GPU_COUNT="${GPU_COUNT:-0}" \
+CONFIG_NAME="$CONFIG_NAME" NCCL_MAX_MSG="$NCCL_MAX_MSG" \
+NUMA_NODES="${NUMA_NODES:-1}" RESULTS_DIR="$RESULTS_DIR" \
+"$PYTHON" - <<'EOF'
+import json, os, re, subprocess, datetime
+
+vendor   = os.environ["GPU_VENDOR"]
+count    = int(os.environ["GPU_COUNT"])
+config   = os.environ["CONFIG_NAME"]
+msg      = os.environ["NCCL_MAX_MSG"]
+numa     = int(os.environ.get("NUMA_NODES") or 1)
+rdir     = os.environ["RESULTS_DIR"]
+
+devices = []
+if vendor == "nvidia":
+    r = subprocess.run(
+        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+        capture_output=True, text=True)
+    devices = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+elif vendor == "amd":
+    r = subprocess.run(["rocm-smi", "--showproductname"],
+                       capture_output=True, text=True)
+    devices = re.findall(r"Card series:\s+(.+)", r.stdout)
+
+hugepages = 0
+try:
+    for line in open("/proc/meminfo"):
+        if line.startswith("HugePages_Total:"):
+            hugepages = int(line.split()[1])
+except OSError:
+    pass
+
+meta = {
+    "config":         config,
+    "timestamp":      datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "vcpus":          os.cpu_count(),
+    "numa_nodes":     numa,
+    "gpu_vendor":     vendor,
+    "gpu_count":      count,
+    "gpu_devices":    devices,
+    "hugepages_total": hugepages,
+    "nccl_max_msg":   msg,
+}
+with open(f"{rdir}/metadata.json", "w") as f:
+    json.dump(meta, f, indent=2)
+print(f"  metadata.json written to {rdir}/")
+EOF
+
 # 1. CPU single-thread
 sysbench cpu --threads=1 --time=30 run 2>&1 | tee "$RESULTS_DIR/cpu_single.txt"
 
@@ -46,7 +97,6 @@ sysbench cpu --threads=$(nproc) --time=30 run 2>&1 | tee "$RESULTS_DIR/cpu_all.t
 OMP_NUM_THREADS=$(nproc) ./stream 2>&1 | tee "$RESULTS_DIR/stream.txt"
 
 # 3a. Per-NUMA-node memory bandwidth (only when >1 NUMA node)
-NUMA_NODES=$(numactl --hardware | awk '/^available:/{print $2}')
 if [[ "${NUMA_NODES:-1}" -gt 1 ]]; then
     OMP_NUM_THREADS=$(nproc) numactl --membind=0 ./stream \
         2>&1 | tee "$RESULTS_DIR/stream_numa_local.txt"
@@ -138,3 +188,6 @@ if [[ "${GPU_COUNT:-0}" -gt 1 ]]; then
             -w 10 -n 100 \
         2>&1 | tee "$RESULTS_DIR/nccl_allreduce.txt"
 fi
+
+# ── summary.csv — machine-readable benchmark results ─────────────────────────
+"$PYTHON" "$SCRIPT_DIR/generate_report.py" --write-summary "$RESULTS_DIR"

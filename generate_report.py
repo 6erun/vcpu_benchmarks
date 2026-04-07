@@ -210,6 +210,56 @@ def parse_hugepages(text: str, cfg: Config):
         cfg.hugepages_total = int(m.group(1))
 
 
+_SUMMARY_FIELDS = [
+    "cpu_single_evs", "cpu_all_evs", "cpu_all_threads",
+    "stream_copy", "stream_scale", "stream_add", "stream_triad",
+    "mem_latency_dram_ns",
+    "gpu_h2d", "gpu_d2h", "gpu_d2d", "gpu_device_name", "gpu_matmul_ms",
+    "nccl_peak_busbw", "nccl_avg_busbw", "nccl_ngpus",
+]
+
+
+def write_summary_csv(cfg: Config, path: Path):
+    import csv
+    row = {f: getattr(cfg, f) for f in _SUMMARY_FIELDS}
+    with open(path / "summary.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_SUMMARY_FIELDS)
+        w.writeheader()
+        w.writerow(row)
+
+
+def _load_metadata(path: Path, cfg: Config):
+    import json
+    try:
+        meta = json.loads((path / "metadata.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if "vcpus" in meta:
+        cfg.vcpus = int(meta["vcpus"])
+    if "hugepages_total" in meta:
+        cfg.hugepages_total = int(meta["hugepages_total"])
+    if meta.get("gpu_devices"):
+        cfg.gpu_device_name = meta["gpu_devices"][0]
+
+
+def _load_summary_csv(path: Path, cfg: Config):
+    import csv
+    try:
+        with open(path / "summary.csv", newline="") as f:
+            row = next(csv.DictReader(f))
+    except (OSError, StopIteration):
+        return
+    for field in _SUMMARY_FIELDS:
+        if field not in row or row[field] == "":
+            continue
+        val = row[field]
+        attr_type = type(getattr(cfg, field))
+        try:
+            setattr(cfg, field, attr_type(val))
+        except (ValueError, TypeError):
+            setattr(cfg, field, val)
+
+
 def load_config(path: Path) -> Config:
     gpu = path.parent.name
     name = path.name
@@ -219,16 +269,32 @@ def load_config(path: Path) -> Config:
         p = path / fname
         return p.read_text() if p.exists() else ""
 
-    parse_numa(read("numa_topology.txt"), cfg)
-    cfg.cpu_single_evs, _ = parse_sysbench(read("cpu_single.txt"))
-    cfg.cpu_all_evs, cfg.cpu_all_threads = parse_sysbench(read("cpu_all.txt"))
-    parse_stream(read("stream.txt"), cfg)
-    parse_gpu_bandwidth(read("gpu_bandwidth.txt"), cfg)
-    parse_gpu_compute(read("gpu_compute.txt"), cfg)
+    # Load structured files first; fall back to text parsing for missing fields
+    has_summary = (path / "summary.csv").exists()
+    if has_summary:
+        _load_summary_csv(path, cfg)
+    if (path / "metadata.json").exists():
+        _load_metadata(path, cfg)
+
+    # Text parsing: always for fields not covered by summary.csv (NUMA, nccl_rows),
+    # and as fallback for everything when summary.csv is absent
+    if not has_summary:
+        parse_numa(read("numa_topology.txt"), cfg)
+        cfg.cpu_single_evs, _ = parse_sysbench(read("cpu_single.txt"))
+        cfg.cpu_all_evs, cfg.cpu_all_threads = parse_sysbench(read("cpu_all.txt"))
+        parse_stream(read("stream.txt"), cfg)
+        parse_gpu_bandwidth(read("gpu_bandwidth.txt"), cfg)
+        parse_gpu_compute(read("gpu_compute.txt"), cfg)
+        parse_mem_latency(read("mem_latency.txt"), cfg)
+        parse_hugepages(read("hugepages.txt"), cfg)
+    else:
+        # NUMA vcpus/ram not in summary.csv — always parse
+        if cfg.vcpus == 0:
+            parse_numa(read("numa_topology.txt"), cfg)
+
+    # nccl_rows (full curve) always comes from the raw file — not stored in summary.csv
     if (path / "nccl_allreduce.txt").exists():
         parse_nccl(read("nccl_allreduce.txt"), cfg)
-    parse_mem_latency(read("mem_latency.txt"), cfg)
-    parse_hugepages(read("hugepages.txt"), cfg)
 
     return cfg
 
@@ -786,6 +852,15 @@ if __name__ == "__main__":
                         help="Path to results directory (default: results)")
     parser.add_argument("-o", "--output", default="results/report.html",
                         help="Output HTML file (default: results/report.html)")
+    parser.add_argument("--write-summary", metavar="DIR",
+                        help="Parse one result directory and write summary.csv, then exit")
     args = parser.parse_args()
+
+    if args.write_summary:
+        p = Path(args.write_summary)
+        cfg = load_config(p)
+        write_summary_csv(cfg, p)
+        print(f"  summary.csv written to {p}/")
+        sys.exit(0)
 
     generate_report(Path(args.results_dir), Path(args.output))
