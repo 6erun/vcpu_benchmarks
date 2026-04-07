@@ -380,7 +380,7 @@ def nccl_chart(cfg: Config, color: str):
     return fig_to_b64(fig)
 
 
-def nccl_overlay_chart(configs: list, colors: list):
+def nccl_overlay_chart(configs: list, colors: list, title: str = "NCCL AllReduce Bus Bandwidth"):
     data = [(c, col) for c, col in zip(configs, colors) if c.nccl_rows]
     if not data:
         return None
@@ -389,7 +389,7 @@ def nccl_overlay_chart(configs: list, colors: list):
     xlabels = None
     for cfg, color in data:
         sizes, bws = zip(*cfg.nccl_rows)
-        ax.plot(range(len(bws)), bws, marker="o", label=cfg.label,
+        ax.plot(range(len(bws)), bws, marker="o", label=cfg.name,
                 color=color, linewidth=2, markersize=5)
         ax.axhline(cfg.nccl_avg_busbw, linestyle="--", color=color,
                    linewidth=1, alpha=0.5)
@@ -403,8 +403,7 @@ def nccl_overlay_chart(configs: list, colors: list):
                 else:
                     xlabels.append(str(s))
 
-    ax.set_title("NCCL AllReduce Bus Bandwidth — All Configs",
-                 fontsize=11, fontweight="bold", pad=10)
+    ax.set_title(title, fontsize=11, fontweight="bold", pad=10)
     ax.set_ylabel("Bus BW (GB/s)", fontsize=9)
     ax.set_xlabel("Message size", fontsize=9)
     if xlabels:
@@ -426,11 +425,20 @@ CSS = """
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
        background: #f5f6fa; color: #222; padding: 24px; }
 h1 { font-size: 1.8rem; margin-bottom: 4px; }
-.meta { color: #666; font-size: 0.9rem; margin-bottom: 32px; }
-h2 { font-size: 1.2rem; margin: 32px 0 12px; border-bottom: 2px solid #dde; padding-bottom: 6px; }
-h3 { font-size: 1rem; margin: 20px 0 8px; color: #444; }
+.meta { color: #666; font-size: 0.9rem; margin-bottom: 16px; }
+nav { background: #fff; border-radius: 8px; padding: 12px 20px; margin-bottom: 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08); display: flex; flex-wrap: wrap; gap: 8px 16px;
+      align-items: center; font-size: 0.88rem; }
+nav a { color: #1a5296; text-decoration: none; font-weight: 500; }
+nav a:hover { text-decoration: underline; }
+nav .nav-sep { color: #ccc; }
+h2 { font-size: 1.25rem; margin: 0 0 16px; }
+h3 { font-size: 1rem; margin: 24px 0 8px; color: #333; border-bottom: 1px solid #eef; padding-bottom: 4px; }
 .section { background: #fff; border-radius: 10px; padding: 24px; margin-bottom: 24px;
            box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+.gpu-section h2 { font-size: 1.2rem; background: #f0f2f8; margin: -24px -24px 20px;
+                  padding: 14px 24px; border-radius: 10px 10px 0 0;
+                  border-bottom: 2px solid #dde; }
 .charts { display: flex; flex-wrap: wrap; gap: 20px; }
 .charts img { border-radius: 6px; border: 1px solid #eee; max-width: 100%; }
 table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
@@ -444,6 +452,9 @@ tr:hover td { background: #fafbff; }
          font-size: 0.75rem; font-weight: 600; }
 .badge-gpu  { background: #e8f0fe; color: #1a5296; }
 .badge-nccl { background: #e6f4ea; color: #1a7340; }
+details summary { cursor: pointer; font-weight: 600; color: #444; padding: 6px 0;
+                  user-select: none; }
+details summary:hover { color: #1a5296; }
 """
 
 
@@ -541,85 +552,144 @@ def discover_configs(results_dir: Path) -> list[Config]:
     return configs
 
 
+def _gpu_section_html(gpu_name: str, gpu_configs: list[Config]) -> str:
+    """Build the HTML for one GPU group."""
+    colors = [PALETTE[i % len(PALETTE)] for i in range(len(gpu_configs))]
+    labels = [c.name for c in gpu_configs]
+
+    cpu_single_img = bar_chart(
+        "CPU Single-thread (sysbench)", labels,
+        [c.cpu_single_evs for c in gpu_configs], "events/sec", colors)
+    cpu_all_img = bar_chart(
+        "CPU Multi-thread (sysbench)", labels,
+        [c.cpu_all_evs for c in gpu_configs], "events/sec", colors)
+    cpu_per_thread_img = bar_chart(
+        "CPU Throughput per Thread", labels,
+        [c.cpu_all_evs / c.cpu_all_threads if c.cpu_all_threads else 0
+         for c in gpu_configs],
+        "events/sec/thread", colors)
+
+    stream_img = stream_grouped_chart(gpu_configs, colors)
+    mem_lat_img = mem_latency_chart(gpu_configs, colors)
+
+    gpu_pcie_img = bar_chart(
+        "GPU PCIe Bandwidth — Host↔Device", labels,
+        [c.gpu_h2d for c in gpu_configs], "GB/s", colors)
+    gpu_d2d_img = bar_chart(
+        "GPU Device-to-Device Bandwidth", labels,
+        [c.gpu_d2d for c in gpu_configs], "GB/s", colors)
+    gpu_matmul_img = bar_chart(
+        "GPU MatMul Latency (lower is better)", labels,
+        [c.gpu_matmul_ms for c in gpu_configs], "ms/matmul", colors,
+        highlight_max=False, highlight_min=True)
+
+    # NCCL
+    nccl_html = ""
+    if any(c.has_nccl for c in gpu_configs):
+        nccl_rows = ""
+        for cfg in gpu_configs:
+            if cfg.has_nccl:
+                nccl_rows += (f"<tr><td><b>{cfg.name}</b></td>"
+                              f"<td>{cfg.nccl_ngpus}</td>"
+                              f"<td>{cfg.nccl_peak_busbw:.2f} GB/s</td>"
+                              f"<td>{cfg.nccl_avg_busbw:.2f} GB/s</td></tr>")
+            else:
+                nccl_rows += (f"<tr><td><b>{cfg.name}</b></td>"
+                              f"<td>—</td><td>—</td><td>—</td></tr>")
+
+        overlay_img = nccl_overlay_chart(
+            gpu_configs, colors,
+            title=f"NCCL AllReduce Bus Bandwidth — {gpu_name}")
+        overlay = img_tag(overlay_img, "NCCL overlay") if overlay_img else ""
+
+        individual = []
+        for cfg, color in zip(gpu_configs, colors):
+            if cfg.has_nccl:
+                img = nccl_chart(cfg, color)
+                if img:
+                    individual.append(img_tag(img, cfg.name))
+        collapsible = ""
+        if individual:
+            charts_html = "".join(individual)
+            collapsible = (f'<details style="margin-top:12px">'
+                           f'<summary>Individual config charts ({len(individual)})</summary>'
+                           f'<div class="charts" style="margin-top:12px">{charts_html}</div>'
+                           f'</details>')
+
+        nccl_html = f"""
+<h3>7. NCCL / RCCL AllReduce</h3>
+<table>
+  <thead><tr><th>Config</th><th>GPUs</th><th>Peak Bus BW</th><th>Avg Bus BW</th></tr></thead>
+  <tbody>{nccl_rows}</tbody>
+</table>
+<p class="note">float32 sum, out-of-place, 8B–1G. Single-GPU configs show —.</p>
+<div class="charts" style="margin-top:12px">{overlay}</div>
+{collapsible}"""
+
+    n = len(gpu_configs)
+    mem_lat_section = ""
+    if mem_lat_img:
+        mem_lat_section = f"""
+<h3>2. Memory Latency — Pointer Chase</h3>
+<div class="charts">{img_tag(mem_lat_img, "Memory latency")}</div>
+<p class="note">Random pointer-chase, increasing array sizes. Lower is better.</p>"""
+
+    s = 3 if mem_lat_img else 2   # STREAM section number
+    return f"""
+<div class="section gpu-section" id="gpu-{gpu_name}">
+  <h2>GPU: {gpu_name} <span style="font-size:0.85rem;font-weight:400;color:#666">({n} config{"s" if n != 1 else ""})</span></h2>
+
+  <h3>1. CPU Performance (sysbench prime, 30 s)</h3>
+  <div class="charts">
+    {img_tag(cpu_single_img, "CPU single-thread")}
+    {img_tag(cpu_all_img, "CPU multi-thread")}
+    {img_tag(cpu_per_thread_img, "CPU per-thread")}
+  </div>
+
+  {mem_lat_section}
+
+  <h3>{s}. Memory Bandwidth — STREAM</h3>
+  <div class="charts">{img_tag(stream_img, "STREAM")}</div>
+
+  <h3>{s+1}. GPU ↔ CPU Memory Bandwidth</h3>
+  <div class="charts">
+    {img_tag(gpu_pcie_img, "GPU PCIe BW")}
+    {img_tag(gpu_d2d_img, "GPU D2D BW")}
+  </div>
+
+  <h3>{s+2}. GPU Compute — MatMul (100 iterations)</h3>
+  <div class="charts">{img_tag(gpu_matmul_img, "GPU matmul")}</div>
+
+  {nccl_html}
+</div>"""
+
+
 def generate_report(results_dir: Path, output: Path):
     configs = discover_configs(results_dir)
     if not configs:
         print("No configs found.", file=sys.stderr)
         sys.exit(1)
 
-    colors = [PALETTE[i % len(PALETTE)] for i in range(len(configs))]
-    labels = [c.label for c in configs]
+    # Group by GPU, preserving discovery order
+    gpu_groups: dict[str, list[Config]] = {}
+    for cfg in configs:
+        gpu_groups.setdefault(cfg.gpu, []).append(cfg)
 
-    print(f"Found {len(configs)} config(s): {', '.join(labels)}")
+    print(f"Found {len(configs)} config(s) across {len(gpu_groups)} GPU(s): "
+          f"{', '.join(gpu_groups)}")
 
-    # --- build charts ---
-    cpu_single_img = bar_chart(
-        "CPU Single-thread (sysbench)", labels,
-        [c.cpu_single_evs for c in configs], "events/sec", colors)
-
-    cpu_all_img = bar_chart(
-        "CPU Multi-thread (sysbench)", labels,
-        [c.cpu_all_evs for c in configs], "events/sec", colors)
-
-    cpu_per_thread_img = bar_chart(
-        "CPU Throughput per Thread", labels,
-        [c.cpu_all_evs / c.cpu_all_threads if c.cpu_all_threads else 0 for c in configs],
-        "events/sec/thread", colors)
-
-    stream_img = stream_grouped_chart(configs, colors)
-    mem_lat_img = mem_latency_chart(configs, colors)
-
-    gpu_pcie_img = bar_chart(
-        "GPU PCIe Bandwidth — Host↔Device", labels,
-        [c.gpu_h2d for c in configs], "GB/s", colors)
-
-    gpu_d2d_img = bar_chart(
-        "GPU Device-to-Device Bandwidth", labels,
-        [c.gpu_d2d for c in configs], "GB/s", colors)
-
-    gpu_matmul_img = bar_chart(
-        "GPU MatMul Latency (4096×4096 FP32, lower is better)", labels,
-        [c.gpu_matmul_ms for c in configs], "ms/matmul", colors,
-        highlight_max=False, highlight_min=True)
-
-    nccl_overlay_img = nccl_overlay_chart(configs, colors)
-    nccl_imgs = []
-    for cfg, color in zip(configs, colors):
-        if cfg.has_nccl:
-            img = nccl_chart(cfg, color)
-            if img:
-                nccl_imgs.append((cfg, img))
-
-    # --- assemble HTML ---
     from datetime import date
     today = date.today().isoformat()
 
-    nccl_section = ""
-    if any(c.has_nccl for c in configs):
-        rows = ""
-        for cfg in configs:
-            if cfg.has_nccl:
-                rows += f"<tr><td><b>{cfg.label}</b></td>" \
-                        f"<td>{cfg.nccl_ngpus}</td>" \
-                        f"<td>{cfg.nccl_peak_busbw:.2f} GB/s</td>" \
-                        f"<td>{cfg.nccl_avg_busbw:.2f} GB/s</td></tr>"
-            else:
-                rows += f"<tr><td><b>{cfg.label}</b></td>" \
-                        f"<td>—</td><td>—</td><td>—</td></tr>"
-        overlay = img_tag(nccl_overlay_img, "NCCL overlay") if nccl_overlay_img else ""
-        charts = overlay + "".join(img_tag(img, cfg.label) for cfg, img in nccl_imgs)
-        section_num = 7 if mem_lat_img else 6
-        nccl_section = f"""
-<div class="section">
-  <h2>{section_num}. NCCL AllReduce</h2>
-  <table>
-    <thead><tr><th>Config</th><th>GPUs</th><th>Peak Bus BW</th><th>Avg Bus BW</th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
-  <p class="note">float32 sum, out-of-place, message sizes 8B–1G. Configs with a single GPU do not run this test (—).</p>
-  <div class="charts" style="margin-top:16px">{charts}</div>
-</div>
-"""
+    nav_links = " <span class='nav-sep'>|</span> ".join(
+        f'<a href="#gpu-{g}">{g} ({len(cs)})</a>'
+        for g, cs in gpu_groups.items())
+    nav_links = (f'<a href="#summary">Summary</a>'
+                 f' <span class="nav-sep">|</span> ') + nav_links
+
+    gpu_sections = "".join(
+        _gpu_section_html(gpu_name, gpu_configs)
+        for gpu_name, gpu_configs in gpu_groups.items())
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -630,56 +700,17 @@ def generate_report(results_dir: Path, output: Path):
 </head>
 <body>
 <h1>vCPU Benchmark Report</h1>
-<p class="meta">Generated: {today} &nbsp;|&nbsp; {len(configs)} configuration(s) &nbsp;|&nbsp;
-</p>
+<p class="meta">Generated: {today} &nbsp;|&nbsp; {len(configs)} config(s) &nbsp;|&nbsp; {len(gpu_groups)} GPU type(s)</p>
+<nav>{nav_links}</nav>
 
-<div class="section">
-  <h2>Configurations</h2>
-  {config_table(configs)}
-</div>
-
-<div class="section">
-  <h2>Summary</h2>
+<div class="section" id="summary">
+  <h2>Summary — all configurations</h2>
   {summary_table(configs)}
-  <p class="note">Bold green = best value in row. Percentages relative to the first config
-  within the same GPU — configs on different GPUs have no percentage shown.
-  Lower is better for matmul latency and memory latency.</p>
+  <p class="note">Bold green = best value. Percentages relative to the first config within
+  the same GPU. Lower is better for latency columns.</p>
 </div>
 
-<div class="section">
-  <h2>1. CPU Performance (sysbench prime, 30 s)</h2>
-  <div class="charts">
-    {img_tag(cpu_single_img, "CPU single-thread")}
-    {img_tag(cpu_all_img, "CPU multi-thread")}
-    {img_tag(cpu_per_thread_img, "CPU per-thread")}
-  </div>
-</div>
-
-{'<div class="section"><h2>2. Memory Latency — Pointer Chase</h2><div class="charts">' + img_tag(mem_lat_img, "Memory latency") + '</div><p class="note">Random pointer-chase through arrays of increasing size. Plateau regions reveal L1/L2/L3 cache and DRAM latency. Lower is better.</p></div>' if mem_lat_img else ''}
-
-<div class="section">
-  <h2>{'3' if mem_lat_img else '2'}. Memory Bandwidth — STREAM</h2>
-  <div class="charts">
-    {img_tag(stream_img, "STREAM")}
-  </div>
-</div>
-
-<div class="section">
-  <h2>{'4' if mem_lat_img else '3'}. GPU ↔ CPU Memory Bandwidth (CUDA bandwidthTest)</h2>
-  <div class="charts">
-    {img_tag(gpu_pcie_img, "GPU PCIe BW")}
-    {img_tag(gpu_d2d_img, "GPU D2D BW")}
-  </div>
-</div>
-
-<div class="section">
-  <h2>{'5' if mem_lat_img else '4'}. GPU Compute — MatMul (4096×4096 FP32, 100 iterations)</h2>
-  <div class="charts">
-    {img_tag(gpu_matmul_img, "GPU matmul")}
-  </div>
-</div>
-
-{nccl_section}
+{gpu_sections}
 
 </body>
 </html>
