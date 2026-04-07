@@ -443,6 +443,10 @@ h3 { font-size: 1rem; margin: 24px 0 8px; color: #333; border-bottom: 1px solid 
 .charts img { border-radius: 6px; border: 1px solid #eee; max-width: 100%; }
 table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
 th { background: #f0f2f8; text-align: left; padding: 8px 12px; border-bottom: 2px solid #ccd; }
+th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+th.sortable:hover { background: #e0e4f0; }
+th.sort-asc::after  { content: " ▲"; font-size: 0.7rem; }
+th.sort-desc::after { content: " ▼"; font-size: 0.7rem; }
 td { padding: 7px 12px; border-bottom: 1px solid #eee; }
 tr:hover td { background: #fafbff; }
 .best { font-weight: 700; color: #1a7340; }
@@ -455,6 +459,34 @@ tr:hover td { background: #fafbff; }
 details summary { cursor: pointer; font-weight: 600; color: #444; padding: 6px 0;
                   user-select: none; }
 details summary:hover { color: #1a5296; }
+"""
+
+SORT_JS = r"""
+<script>
+document.querySelectorAll('table.sortable').forEach(function(table) {
+  var tbody = table.querySelector('tbody');
+  table.querySelectorAll('thead th').forEach(function(th, col) {
+    th.classList.add('sortable');
+    th.addEventListener('click', function() {
+      var asc = !th.classList.contains('sort-asc');
+      table.querySelectorAll('thead th').forEach(function(h) {
+        h.classList.remove('sort-asc', 'sort-desc');
+      });
+      th.classList.add(asc ? 'sort-asc' : 'sort-desc');
+      var rows = Array.from(tbody.querySelectorAll('tr'));
+      rows.sort(function(a, b) {
+        var av = a.cells[col] ? a.cells[col].textContent.trim() : '';
+        var bv = b.cells[col] ? b.cells[col].textContent.trim() : '';
+        var an = parseFloat(av.replace(/[^0-9.-]/g, ''));
+        var bn = parseFloat(bv.replace(/[^0-9.-]/g, ''));
+        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+        return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+      });
+      rows.forEach(function(r) { tbody.appendChild(r); });
+    });
+  });
+});
+</script>
 """
 
 
@@ -472,49 +504,64 @@ def pct(val, ref):
 
 
 def summary_table(configs: list[Config]) -> str:
-    # Build a per-GPU baseline map: first config index seen for each gpu name.
+    # Metrics definition: (header, getter, unit, lower_is_better)
+    metrics = [
+        ("CPU 1T (ev/s)",      lambda c: c.cpu_single_evs,      "ev/s",  False),
+        ("CPU MT (ev/s)",      lambda c: c.cpu_all_evs,          "ev/s",  False),
+        ("Threads",            lambda c: float(c.cpu_all_threads),"",     False),
+        ("Mem lat (ns)",       lambda c: c.mem_latency_dram_ns,  "ns",    True),
+        ("STREAM Copy (MB/s)", lambda c: c.stream_copy,          "MB/s",  False),
+        ("STREAM Triad (MB/s)",lambda c: c.stream_triad,         "MB/s",  False),
+        ("H→D (GB/s)",         lambda c: c.gpu_h2d,              "GB/s",  False),
+        ("D→H (GB/s)",         lambda c: c.gpu_d2h,              "GB/s",  False),
+        ("D→D (GB/s)",         lambda c: c.gpu_d2d,              "GB/s",  False),
+        ("MatMul (ms)",        lambda c: c.gpu_matmul_ms,        "ms",    True),
+        ("NCCL peak (GB/s)",   lambda c: c.nccl_peak_busbw,      "GB/s",  False),
+    ]
+
+    # Per-GPU baseline: first config index for each gpu name
     gpu_baseline: dict[str, int] = {}
     for i, c in enumerate(configs):
         if c.gpu not in gpu_baseline:
             gpu_baseline[c.gpu] = i
 
-    def row(label, getter, unit, lower_is_better=False):
+    # Per-metric: find global best config index (across all configs)
+    def best_index(getter, lower_is_better):
         vals = [getter(c) for c in configs]
-        nonzero = [v for v in vals if v != 0]
-        best_i = None
-        if nonzero:
-            best_val = min(nonzero) if lower_is_better else max(nonzero)
-            best_i = next(i for i, v in enumerate(vals) if v == best_val)
+        nonzero = [(v, i) for i, v in enumerate(vals) if v != 0]
+        if not nonzero:
+            return None
+        return min(nonzero, key=lambda x: x[0])[1] if lower_is_better \
+               else max(nonzero, key=lambda x: x[0])[1]
+
+    headers = "".join(
+        f"<th style='white-space:nowrap'>{h}</th>"
+        for h, *_ in metrics)
+
+    rows = ""
+    for i, cfg in enumerate(configs):
+        ref_i = gpu_baseline[cfg.gpu]
         cells = ""
-        for i, (c, v) in enumerate(zip(configs, vals)):
+        for _, getter, unit, lib in metrics:
+            v = getter(cfg)
+            bi = best_index(getter, lib)
             if v == 0:
                 cells += "<td>—</td>"
                 continue
-            ref_i = gpu_baseline[c.gpu]
-            ref_v = vals[ref_i]
-            delta = pct(v if not lower_is_better else -v,
-                        ref_v if not lower_is_better else -ref_v) if i != ref_i else ""
-            cls = ' class="best"' if i == best_i else ""
-            cells += f"<td{cls}>{v:,.1f} {unit}{delta}</td>"
-        return f"<tr><td><b>{label}</b></td>{cells}</tr>"
+            ref_v = getter(configs[ref_i])
+            if i != ref_i and ref_v != 0:
+                delta = pct(-v if lib else v, -ref_v if lib else ref_v)
+            else:
+                delta = ""
+            cls = ' class="best"' if i == bi else ""
+            fmt = f"{v:,.0f}" if unit == "" else f"{v:,.1f}"
+            cells += f"<td{cls}>{fmt}{' ' + unit if unit else ''}{delta}</td>"
+        rows += f"<tr><td><b>{cfg.label}</b></td>{cells}</tr>"
 
-    headers = "".join(f"<th>{c.label}</th>" for c in configs)
     return f"""
-<table>
-<thead><tr><th>Metric</th>{headers}</tr></thead>
-<tbody>
-{row("CPU single-thread (ev/s)", lambda c: c.cpu_single_evs, "ev/s")}
-{row("CPU multi-thread (ev/s)", lambda c: c.cpu_all_evs, "ev/s")}
-{row("CPU threads", lambda c: c.cpu_all_threads, "", False)}
-{row("Mem latency DRAM (ns)", lambda c: c.mem_latency_dram_ns, "ns", lower_is_better=True)}
-{row("STREAM Copy (MB/s)", lambda c: c.stream_copy, "MB/s")}
-{row("STREAM Triad (MB/s)", lambda c: c.stream_triad, "MB/s")}
-{row("GPU H→D PCIe (GB/s)", lambda c: c.gpu_h2d, "GB/s")}
-{row("GPU D→H PCIe (GB/s)", lambda c: c.gpu_d2h, "GB/s")}
-{row("GPU D→D (GB/s)", lambda c: c.gpu_d2d, "GB/s")}
-{row("GPU matmul latency (ms)", lambda c: c.gpu_matmul_ms, "ms", lower_is_better=True)}
-{row("NCCL peak bus BW (GB/s)", lambda c: c.nccl_peak_busbw, "GB/s")}
-</tbody>
+<table class="sortable">
+<thead><tr><th>Config</th>{headers}</tr></thead>
+<tbody>{rows}</tbody>
 </table>
 """
 
@@ -712,6 +759,7 @@ def generate_report(results_dir: Path, output: Path):
 
 {gpu_sections}
 
+{SORT_JS}
 </body>
 </html>
 """
