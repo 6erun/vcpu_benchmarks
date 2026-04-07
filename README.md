@@ -17,10 +17,18 @@ sudo ./setup_vcpu_benchmarks.sh
 
 ```bash
 ./run_vcpu_benchmark.sh <config_name>
-# Results are written to results/<config_name>/
+# Results are written to results/<gpu>/<config_name>/
 ```
 
-Results are organized as `results/<gpu>/<config_name>/` — create subdirectories per GPU type to compare across hardware.
+Organise results as `results/<gpu>/<config_name>/` — one subdirectory per GPU type so the report can compare configurations across hardware.
+
+Optional arguments:
+
+```bash
+./run_vcpu_benchmark.sh <config_name> [--nccl-max-msg SIZE]
+```
+
+- `--nccl-max-msg SIZE` — maximum message size for the NCCL/RCCL AllReduce sweep (default: `1G`).
 
 **3. Generate HTML report:**
 
@@ -32,10 +40,14 @@ python3 generate_report.py
 Options:
 
 ```bash
-python3 generate_report.py [results_dir] [-o output.html]
+python3 generate_report.py [results_dir] [-o output.html|.pdf]
 ```
 
 Dependencies: `pip install -r requirements.txt`
+
+The report groups results by GPU type, with each group showing its own charts so
+configurations are only compared against others on the same hardware. A summary table
+at the top covers all configurations and supports click-to-sort on any column.
 
 ## NUMA nodes
 

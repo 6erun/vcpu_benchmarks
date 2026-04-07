@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Scripts
 
 - `setup_vcpu_benchmarks.sh` — one-time setup script; installs system packages, builds `stream` and `mem_latency`, and auto-detects GPU vendor (NVIDIA or AMD) to install the appropriate tools: `bandwidthTest` or `rocm-bandwidth-test`, nccl-tests or rccl-tests, and CUDA or ROCm PyTorch wheels. Run as root inside the guest VM.
-- `run_vcpu_benchmark.sh <config_name>` — runs the full benchmark suite and writes results to `results/<config_name>/`. Requires setup to have been run first.
+- `run_vcpu_benchmark.sh <config_name> [--nccl-max-msg SIZE]` — runs the full benchmark suite and writes results to `results/<config_name>/`. `--nccl-max-msg` sets the NCCL max message size (default `1G`). Requires setup to have been run first.
 - `matmul_bench.py` — GPU matrix multiply benchmark using PyTorch (called by `run_vcpu_benchmark.sh`).
 - `generate_report.py` — generates a self-contained HTML report from all `results/<gpu>/<config>/` directories. Requires `matplotlib` and `numpy`. Run with `python3 generate_report.py`; output defaults to `results/report.html`.
 
@@ -29,7 +29,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Results layout
 
 ```text
-results/<config_name>/
+results/<gpu>/<config_name>/
   numa_topology.txt
   cpu_topology.txt          # lscpu — verifies socket/core/thread topology from domain XML
   hugepages.txt             # /proc/meminfo hugepages lines — verifies <memoryBacking>
