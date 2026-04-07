@@ -18,6 +18,12 @@ done
 RESULTS_DIR="results/${CONFIG_NAME}"
 mkdir -p "$RESULTS_DIR"
 
+# ── Ensure CUDA/ROCm bin dirs are on PATH ─────────────────────────────────────
+for _bin in /usr/local/cuda/bin /usr/local/cuda-*/bin /opt/rocm/bin /opt/rocm-*/bin; do
+    [[ -d "$_bin" && ":$PATH:" != *":$_bin:"* ]] && export PATH="$_bin:$PATH"
+done
+unset _bin
+
 # ── GPU vendor detection ──────────────────────────────────────────────────────
 GPU_VENDOR="none"
 if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null 2>&1; then

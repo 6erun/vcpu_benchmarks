@@ -140,8 +140,9 @@ if ! "$VENV_DIR/bin/python" -c "import torch; torch.zeros(1, device='cuda')" &>/
             --index-url https://download.pytorch.org/whl/cu128
     elif [[ "$GPU_VENDOR" == "amd" ]]; then
         # ROCm PyTorch — maps device('cuda') to ROCm internally
+        # rocm6.3+ required for MI350 (gfx950) and later AMD GPUs
         "$VENV_DIR/bin/pip" install --quiet torch numpy \
-            --index-url https://download.pytorch.org/whl/rocm6.2
+            --index-url https://download.pytorch.org/whl/rocm6.3
     else
         "$VENV_DIR/bin/pip" install --quiet torch numpy
     fi
