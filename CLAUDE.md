@@ -11,7 +11,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `setup_vcpu_benchmarks.sh` — one-time setup script; installs system packages, builds `stream` and `mem_latency`, and auto-detects GPU vendor (NVIDIA or AMD) to install the appropriate tools: `bandwidthTest` or `rocm-bandwidth-test`, nccl-tests or rccl-tests, and CUDA or ROCm PyTorch wheels. Run as root inside the guest VM.
 - `run_vcpu_benchmark.sh <config_name> [--nccl-max-msg SIZE]` — runs the full benchmark suite and writes results to `results/<config_name>/`. `--nccl-max-msg` sets the NCCL max message size (default `1G`). Requires setup to have been run first.
 - `matmul_bench.py` — GPU matrix multiply benchmark using PyTorch (called by `run_vcpu_benchmark.sh`).
-- `generate_report.py` — generates a self-contained HTML report from all `results/<gpu>/<config>/` directories. Requires `matplotlib` and `numpy`. Run with `python3 generate_report.py`; output defaults to `results/report.html`.
+- `gpu_bandwidth_bench.py` — GPU↔CPU and device-to-device bandwidth benchmark using PyTorch/HIP (used for AMD; replaces `rocm-bandwidth-test` which changed CLI in ROCm 7.x and crashes on MI350X).
+- `generate_report.py` — generates a self-contained HTML report from all `results/<gpu>/<config>/` directories. Requires `matplotlib` and `numpy`. Run with `python3 generate_report.py`; output defaults to `results/report.html`. Also refreshes `summary.csv` in each result directory on every run.
 
 ## Benchmark suite
 
@@ -23,7 +24,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 3a | `stream` via `numactl --membind` | Per-NUMA-node memory bandwidth (multi-NUMA only) |
 | 4 | `mem_latency` (pointer chase) | Memory latency vs array size (L1/L2/L3/DRAM tiers) |
 | 5 | `matmul_bench.py` (PyTorch) | GPU compute (matmul) — run first to warm GPU |
-| 6 | `bandwidthTest` / `rocm-bandwidth-test` | GPU↔CPU memory bandwidth (5 runs, best kept) |
+| 6 | `bandwidthTest` (NVIDIA) / `gpu_bandwidth_bench.py` (AMD) | GPU↔CPU memory bandwidth (5 runs, best kept) |
 | 7 | `all_reduce_perf` (nccl-tests / rccl-tests) | Multi-GPU collective bandwidth |
 
 ## Results layout

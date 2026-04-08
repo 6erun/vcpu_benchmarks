@@ -189,11 +189,15 @@ when PCIe transfers are measured.
 
 ---
 
-### 6. GPU ↔ CPU memory bandwidth — `bandwidthTest` (NVIDIA) / `rocm-bandwidth-test` (AMD)
+### 6. GPU ↔ CPU memory bandwidth — `bandwidthTest` (NVIDIA) / `gpu_bandwidth_bench.py` (AMD)
 
 Tests pinned memory transfers in both directions (host→device, device→host) and device-to-device
 bandwidth (GPU internal). Runs **5 times**; the report takes the best result across all runs to
 guard against PCIe variance and GPU boost ramp-up on the first transfer.
+
+For NVIDIA, `bandwidthTest` (from CUDA samples) is used. For AMD, `gpu_bandwidth_bench.py`
+(a PyTorch/HIP script) is used — `rocm-bandwidth-test` in ROCm 7.x switched to a plugin
+architecture that does not support all GPU generations (e.g. MI350X).
 
 **Why it matters for vCPU configs:** Host↔device bandwidth is limited by PCIe (typically
 25–60 GB/s on PCIe 4.0/5.0 ×16). Inside a VM the GPU is passed through via VFIO. If the vCPUs
@@ -218,3 +222,14 @@ matters because the CPU orchestrates NCCL/RCCL operations — if the vCPUs are o
 NUMA node than the GPUs' PCIe attachment, coordination overhead increases latency at small
 message sizes, raising the point at which bandwidth saturates. The average bus bandwidth across
 all sizes is a useful single-number summary of collective performance.
+
+**AMD-specific notes:**
+
+- `HSA_NO_SCRATCH_RECLAIM=1` is required on MI350X (and possibly other recent AMD GPUs) to
+  prevent RCCL from failing with a fatal scratch reclaim error.
+- `NCCL_P2P_DISABLE=1` is set automatically. On MI350X VF configurations, direct GPU↔GPU
+  P2P/XGMI memory access hangs; routing through host shared memory (SHM transport) is required.
+  This lowers peak bus bandwidth compared to bare-metal NVLink/XGMI but reflects the real
+  achievable performance in the VM configuration.
+- ROCm 7.0+ PyTorch wheels are required for MI350X (gfx950). Earlier rocm6.x wheels only
+  support up to gfx942 (MI300X).
