@@ -569,6 +569,23 @@ details summary { cursor: pointer; font-weight: 600; color: #444; padding: 6px 0
                   user-select: none; }
 details summary:hover { color: #1a5296; }
 h3 .desc { font-weight: 400; font-size: 0.8rem; color: #888; margin-left: 8px; }
+@media print {
+  body { background: #fff; padding: 12px; }
+  nav { display: none; }
+  .section { box-shadow: none; border: 1px solid #dde; page-break-inside: avoid; }
+  .gpu-section { page-break-before: always; }
+  .gpu-section:first-of-type { page-break-before: auto; }
+  h3 { page-break-after: avoid; }
+  .charts { display: block; }
+  .charts img { max-width: 100%; width: 100%; margin-bottom: 12px; }
+  details { display: block; }
+  details > * { display: block; }
+  details summary::marker { display: none; }
+  table { page-break-inside: auto; font-size: 0.78rem; }
+  tr { page-break-inside: avoid; }
+  th, td { padding: 5px 8px; }
+  th.sortable::after { display: none; }
+}
 """
 
 SORT_JS = r"""
@@ -822,6 +839,48 @@ def _gpu_section_html(gpu_name: str, gpu_configs: list[Config]) -> str:
 </div>"""
 
 
+_CHROMIUM_CANDIDATES = ["chromium", "chromium-browser", "google-chrome", "google-chrome-stable"]
+
+
+def _write_pdf(html: str, output: Path):
+    import shutil
+    import subprocess
+    import tempfile
+
+    chrome = next((c for c in _CHROMIUM_CANDIDATES if shutil.which(c)), None)
+    if chrome:
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            f.write(html.encode())
+            tmp_html = Path(f.name)
+        try:
+            subprocess.run(
+                [chrome, "--headless", "--no-sandbox", "--disable-gpu",
+                 f"--print-to-pdf={output.resolve()}",
+                 "--print-to-pdf-no-header",
+                 tmp_html.as_uri()],
+                check=True, capture_output=True,
+            )
+            print(f"PDF report written to: {output.resolve()}  (via {chrome})")
+        finally:
+            tmp_html.unlink(missing_ok=True)
+        return
+
+    # Fallback: weasyprint
+    try:
+        import weasyprint
+        weasyprint.HTML(string=html).write_pdf(output)
+        print(f"PDF report written to: {output.resolve()}  (via weasyprint)")
+    except ImportError:
+        print(
+            "ERROR: No Chromium/Chrome found and weasyprint is not installed.\n"
+            "Install one of:\n"
+            "  apt install chromium  /  apt install google-chrome-stable\n"
+            "  pip install weasyprint",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def generate_report(results_dir: Path, output: Path):
     configs = discover_configs(results_dir)
     if not configs:
@@ -876,14 +935,7 @@ def generate_report(results_dir: Path, output: Path):
 """
 
     if output.suffix.lower() == ".pdf":
-        try:
-            import weasyprint
-        except ImportError:
-            print("ERROR: weasyprint is required for PDF output.\n"
-                  "Install it with: pip install weasyprint", file=sys.stderr)
-            sys.exit(1)
-        weasyprint.HTML(string=html).write_pdf(output)
-        print(f"PDF report written to: {output.resolve()}")
+        _write_pdf(html, output)
     else:
         output.write_text(html)
         print(f"Report written to: {output.resolve()}")

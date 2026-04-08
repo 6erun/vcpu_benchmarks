@@ -43,20 +43,26 @@ static double measure_ns(size_t size_bytes) {
     free(perm);
 
     /* Warmup: two full passes to warm caches/TLB */
-    volatile void *p = mem[0];
-    for (size_t i = 0; i < n * 2; i++) p = *(void **)p;
+    void *p = mem[0];
+    for (size_t i = 0; i < n * 2; i++) {
+        p = *(void **)p;
+        __asm__ volatile("" : "+r"(p));  /* prevent loop elimination by optimizer */
+    }
 
     /* Timed run: keep going until >= 300 ms elapsed */
     struct timespec t0, t1;
     size_t total = 0;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     do {
-        for (size_t i = 0; i < n; i++) p = *(void **)p;
+        for (size_t i = 0; i < n; i++) {
+            p = *(void **)p;
+            __asm__ volatile("" : "+r"(p));  /* force each dereference to be executed */
+        }
         total += n;
         clock_gettime(CLOCK_MONOTONIC, &t1);
     } while ((long)(t1.tv_sec  - t0.tv_sec)  * 1000 +
              (long)(t1.tv_nsec - t0.tv_nsec) / 1000000 < 300);
-    (void)p;
+    __asm__ volatile("" : "+r"(p));
 
     free(mem);
     double elapsed = (double)(t1.tv_sec  - t0.tv_sec)  * 1e9
