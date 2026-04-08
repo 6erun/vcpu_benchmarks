@@ -4,16 +4,56 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 
-CONFIG_NAME="${1:?usage: $0 <config_name> [--nccl-max-msg SIZE]}"
+_usage() {
+    cat <<'EOF'
+Usage: run_vcpu_benchmark.sh <config_name> [OPTIONS]
+
+Arguments:
+  config_name         Name for this run; results go to results/<config_name>/
+
+Options:
+  --tests LIST        Comma-separated list of tests to run (default: all).
+                      Available tests:
+                        cpu-single    sysbench single-thread CPU
+                        cpu-all       sysbench multi-thread CPU (all vCPUs)
+                        stream        STREAM memory bandwidth (+ per-NUMA if >1 node)
+                        mem-latency   pointer-chase memory latency curve
+                        gpu-compute   PyTorch matmul GPU compute benchmark
+                        gpu-bandwidth GPU↔CPU memory bandwidth (bandwidthTest / HIP)
+                        nccl          NCCL/RCCL all_reduce multi-GPU bandwidth
+  --nccl-max-msg SIZE Max message size for NCCL all_reduce (default: 1G)
+  --help              Show this help and exit
+
+Examples:
+  run_vcpu_benchmark.sh myconfig
+  run_vcpu_benchmark.sh myconfig --tests cpu-single,cpu-all
+  run_vcpu_benchmark.sh myconfig --tests gpu-compute,gpu-bandwidth,nccl --nccl-max-msg 512M
+EOF
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    _usage; exit 0
+fi
+
+CONFIG_NAME="${1:?$(echo 'error: config_name is required'; echo; _usage)}"
 NCCL_MAX_MSG="1G"
+TESTS_FILTER=""
 
 shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --nccl-max-msg) NCCL_MAX_MSG="$2"; shift 2 ;;
+        --tests)        TESTS_FILTER="$2"; shift 2 ;;
+        --help|-h)      _usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+# Returns 0 (run) if TESTS_FILTER is empty or contains the given test name
+_should_run() {
+    [[ -z "$TESTS_FILTER" ]] || \
+        echo ",$TESTS_FILTER," | grep -q ",${1},"
+}
 
 RESULTS_DIR="results/${CONFIG_NAME}"
 mkdir -p "$RESULTS_DIR"
@@ -94,41 +134,49 @@ print(f"  metadata.json written to {rdir}/")
 EOF
 
 # 1. CPU single-thread
-sysbench cpu --threads=1 --time=30 run 2>&1 | tee "$RESULTS_DIR/cpu_single.txt"
+if _should_run cpu-single; then
+    sysbench cpu --threads=1 --time=30 run 2>&1 | tee "$RESULTS_DIR/cpu_single.txt"
+fi
 
 # 2. CPU all-threads
-sysbench cpu --threads=$(nproc) --time=30 run 2>&1 | tee "$RESULTS_DIR/cpu_all.txt"
+if _should_run cpu-all; then
+    sysbench cpu --threads=$(nproc) --time=30 run 2>&1 | tee "$RESULTS_DIR/cpu_all.txt"
+fi
 
 # 3. Memory bandwidth
-OMP_NUM_THREADS=$(nproc) ./stream 2>&1 | tee "$RESULTS_DIR/stream.txt"
+if _should_run stream; then
+    OMP_NUM_THREADS=$(nproc) ./stream 2>&1 | tee "$RESULTS_DIR/stream.txt"
 
-# 3a. Per-NUMA-node memory bandwidth (only when >1 NUMA node)
-if [[ "${NUMA_NODES:-1}" -gt 1 ]]; then
-    OMP_NUM_THREADS=$(nproc) numactl --membind=0 ./stream \
-        2>&1 | tee "$RESULTS_DIR/stream_numa_local.txt"
-    OMP_NUM_THREADS=$(nproc) numactl --membind=1 ./stream \
-        2>&1 | tee "$RESULTS_DIR/stream_numa_remote.txt"
+    # 3a. Per-NUMA-node memory bandwidth (only when >1 NUMA node)
+    if [[ "${NUMA_NODES:-1}" -gt 1 ]]; then
+        OMP_NUM_THREADS=$(nproc) numactl --membind=0 ./stream \
+            2>&1 | tee "$RESULTS_DIR/stream_numa_local.txt"
+        OMP_NUM_THREADS=$(nproc) numactl --membind=1 ./stream \
+            2>&1 | tee "$RESULTS_DIR/stream_numa_remote.txt"
+    fi
 fi
 
 # 4. Memory latency
-if [[ -x ./mem_latency ]]; then
+if _should_run mem-latency && [[ -x ./mem_latency ]]; then
     ./mem_latency 2>&1 | tee "$RESULTS_DIR/mem_latency.txt"
 fi
 
 # 5. GPU compute (run before bandwidth to warm GPU to operating temperature)
-"$PYTHON" matmul_bench.py 2>&1 | tee "$RESULTS_DIR/gpu_compute.txt"
+if _should_run gpu-compute; then
+    "$PYTHON" matmul_bench.py 2>&1 | tee "$RESULTS_DIR/gpu_compute.txt"
+fi
 
 # 6. GPU bandwidth — 5 iterations, all runs saved; report parser takes the best
 # GPU is already warm from matmul; multiple runs guard against PCIe/boost variance.
 GPU_BW_RUNS=5
-if [[ "$GPU_VENDOR" == "nvidia" ]]; then
+if _should_run gpu-bandwidth && [[ "$GPU_VENDOR" == "nvidia" ]]; then
     {
         for _i in $(seq 1 $GPU_BW_RUNS); do
             echo "# run ${_i}"
             ./bandwidthTest --memory=pinned 2>&1
         done
     } | tee "$RESULTS_DIR/gpu_bandwidth.txt"
-elif [[ "$GPU_VENDOR" == "amd" ]]; then
+elif _should_run gpu-bandwidth && [[ "$GPU_VENDOR" == "amd" ]]; then
     # rocm-bandwidth-test / TransferBench crash on some AMD GPU generations (e.g. MI350X).
     # Fall back to gpu_bandwidth_bench.py which uses PyTorch/HIP directly.
     if command -v rocm-bandwidth-test &>/dev/null && \
@@ -154,7 +202,7 @@ fi
 # -n 100  : timed iterations (reduces variance especially at small message sizes)
 # -e 1G   : large max message ensures true PCIe/NVLink plateau is reached
 # NCCL_ALGO/PROTO: pin to Ring+Simple for reproducible large-message results
-if [[ "${GPU_COUNT:-0}" -gt 1 ]]; then
+if _should_run nccl && [[ "${GPU_COUNT:-0}" -gt 1 ]]; then
     # Collect unique NUMA nodes for all GPUs via PCIe sysfs.
     # nvidia-smi returns 00000000:XX:YY.Z; sysfs uses 0000:XX:YY.Z — strip leading 4 zeros.
     # Returns sorted unique node numbers, one per line.
