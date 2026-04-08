@@ -102,8 +102,32 @@ def parse_stream(text: str, cfg: Config):
 def parse_gpu_bandwidth(text: str, cfg: Config):
     if "RocmBandwidthTest" in text or "Src Device Type" in text:
         _parse_gpu_bandwidth_rocm(text, cfg)
+    elif "Host-to-Device:" in text:
+        _parse_gpu_bandwidth_pytorch(text, cfg)
     else:
         _parse_gpu_bandwidth_cuda(text, cfg)
+
+
+def _parse_gpu_bandwidth_pytorch(text: str, cfg: Config):
+    """Parse output from gpu_bandwidth_bench.py (PyTorch/HIP).
+
+    Format (repeated per GPU per run block):
+        GPU 0 [AMD Instinct MI350X VF]
+          Host-to-Device: 54.70 GB/s
+          Device-to-Host: 57.04 GB/s
+          Device-to-Device: 2660.62 GB/s
+    Takes the best value across all GPUs and all run blocks.
+    """
+    m = re.search(r"GPU \d+ \[([^\]]+)\]", text)
+    if m:
+        cfg.gpu_device_name = m.group(1).strip()
+
+    for h2d in re.findall(r"Host-to-Device:\s*([\d.]+)", text):
+        cfg.gpu_h2d = max(cfg.gpu_h2d, float(h2d))
+    for d2h in re.findall(r"Device-to-Host:\s*([\d.]+)", text):
+        cfg.gpu_d2h = max(cfg.gpu_d2h, float(d2h))
+    for d2d in re.findall(r"Device-to-Device:\s*([\d.]+)", text):
+        cfg.gpu_d2d = max(cfg.gpu_d2d, float(d2d))
 
 
 def _parse_gpu_bandwidth_cuda(text: str, cfg: Config):
@@ -276,21 +300,40 @@ def load_config(path: Path) -> Config:
     if (path / "metadata.json").exists():
         _load_metadata(path, cfg)
 
-    # Text parsing: always for fields not covered by summary.csv (NUMA, nccl_rows),
-    # and as fallback for everything when summary.csv is absent
-    if not has_summary:
-        parse_numa(read("numa_topology.txt"), cfg)
-        cfg.cpu_single_evs, _ = parse_sysbench(read("cpu_single.txt"))
-        cfg.cpu_all_evs, cfg.cpu_all_threads = parse_sysbench(read("cpu_all.txt"))
-        parse_stream(read("stream.txt"), cfg)
-        parse_gpu_bandwidth(read("gpu_bandwidth.txt"), cfg)
-        parse_gpu_compute(read("gpu_compute.txt"), cfg)
-        parse_mem_latency(read("mem_latency.txt"), cfg)
-        parse_hugepages(read("hugepages.txt"), cfg)
-    else:
-        # NUMA vcpus/ram not in summary.csv — always parse
-        if cfg.vcpus == 0:
-            parse_numa(read("numa_topology.txt"), cfg)
+    # Always parse from raw text files; summary.csv values take precedence only
+    # when non-zero/non-empty (guards against stale summaries from failed runs).
+    parse_numa(read("numa_topology.txt"), cfg)
+    _cpu_single, _ = parse_sysbench(read("cpu_single.txt"))
+    _cpu_all, _cpu_threads = parse_sysbench(read("cpu_all.txt"))
+    if not has_summary or cfg.cpu_single_evs == 0:
+        cfg.cpu_single_evs = _cpu_single
+    if not has_summary or cfg.cpu_all_evs == 0:
+        cfg.cpu_all_evs = _cpu_all
+        cfg.cpu_all_threads = _cpu_threads
+    _stream_cfg = Config(gpu=cfg.gpu, name=cfg.name, label=cfg.label)
+    parse_stream(read("stream.txt"), _stream_cfg)
+    if not has_summary or cfg.stream_copy == 0:
+        cfg.stream_copy  = _stream_cfg.stream_copy
+        cfg.stream_scale = _stream_cfg.stream_scale
+        cfg.stream_add   = _stream_cfg.stream_add
+        cfg.stream_triad = _stream_cfg.stream_triad
+    _bw_cfg = Config(gpu=cfg.gpu, name=cfg.name, label=cfg.label)
+    parse_gpu_bandwidth(read("gpu_bandwidth.txt"), _bw_cfg)
+    if not has_summary or cfg.gpu_h2d == 0:
+        cfg.gpu_h2d = _bw_cfg.gpu_h2d
+        cfg.gpu_d2h = _bw_cfg.gpu_d2h
+        cfg.gpu_d2d = _bw_cfg.gpu_d2d
+    if not has_summary or not cfg.gpu_device_name:
+        cfg.gpu_device_name = _bw_cfg.gpu_device_name
+    _gcomp_cfg = Config(gpu=cfg.gpu, name=cfg.name, label=cfg.label)
+    parse_gpu_compute(read("gpu_compute.txt"), _gcomp_cfg)
+    if not has_summary or cfg.gpu_matmul_ms == 0:
+        cfg.gpu_matmul_ms = _gcomp_cfg.gpu_matmul_ms
+    _ml_cfg = Config(gpu=cfg.gpu, name=cfg.name, label=cfg.label)
+    parse_mem_latency(read("mem_latency.txt"), _ml_cfg)
+    if not has_summary or cfg.mem_latency_dram_ns == 0:
+        cfg.mem_latency_dram_ns = _ml_cfg.mem_latency_dram_ns
+    parse_hugepages(read("hugepages.txt"), cfg)
 
     # nccl_rows (full curve) always comes from the raw file — not stored in summary.csv
     if (path / "nccl_allreduce.txt").exists():
@@ -342,7 +385,7 @@ def bar_chart(title, labels, values, unit, colors, highlight_max=True, highlight
     ax.set_xticks(x)
     ax.set_xticklabels(labels, fontsize=9)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
-    ax.set_ylim(0, max(values) * 1.2 if values else 1)
+    ax.set_ylim(0, max(max(values) * 1.2, 1) if values else 1)
     ax.grid(axis="y", linestyle="--", alpha=0.4, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
@@ -661,7 +704,9 @@ def discover_configs(results_dir: Path) -> list[Config]:
             continue
         for cfg_dir in sorted(gpu_dir.iterdir()):
             if cfg_dir.is_dir():
-                configs.append(load_config(cfg_dir))
+                cfg = load_config(cfg_dir)
+                write_summary_csv(cfg, cfg_dir)
+                configs.append(cfg)
     return configs
 
 
@@ -858,6 +903,10 @@ if __name__ == "__main__":
 
     if args.write_summary:
         p = Path(args.write_summary)
+        # Always parse raw text files — do not let an existing summary.csv seed the values
+        summary = p / "summary.csv"
+        if summary.exists():
+            summary.unlink()
         cfg = load_config(p)
         write_summary_csv(cfg, p)
         print(f"  summary.csv written to {p}/")
