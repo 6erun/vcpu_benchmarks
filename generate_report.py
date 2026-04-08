@@ -568,6 +568,7 @@ tr:hover td { background: #fafbff; }
 details summary { cursor: pointer; font-weight: 600; color: #444; padding: 6px 0;
                   user-select: none; }
 details summary:hover { color: #1a5296; }
+h3 .desc { font-weight: 400; font-size: 0.8rem; color: #888; margin-left: 8px; }
 """
 
 SORT_JS = r"""
@@ -775,7 +776,7 @@ def _gpu_section_html(gpu_name: str, gpu_configs: list[Config]) -> str:
                            f'</details>')
 
         nccl_html = f"""
-<h3>7. NCCL / RCCL AllReduce</h3>
+<h3>7. NCCL / RCCL AllReduce <span class="desc">measures collective inter-GPU bandwidth (bus BW) — the bottleneck for distributed training across multiple GPUs</span></h3>
 <table>
   <thead><tr><th>Config</th><th>GPUs</th><th>Peak Bus BW</th><th>Avg Bus BW</th></tr></thead>
   <tbody>{nccl_rows}</tbody>
@@ -788,16 +789,15 @@ def _gpu_section_html(gpu_name: str, gpu_configs: list[Config]) -> str:
     mem_lat_section = ""
     if mem_lat_img:
         mem_lat_section = f"""
-<h3>2. Memory Latency — Pointer Chase</h3>
-<div class="charts">{img_tag(mem_lat_img, "Memory latency")}</div>
-<p class="note">Random pointer-chase, increasing array sizes. Lower is better.</p>"""
+<h3>2. Memory Latency — Pointer Chase <span class="desc">random pointer-chase reveals cache hierarchy (L1/L2/L3/DRAM) — lower is better</span></h3>
+<div class="charts">{img_tag(mem_lat_img, "Memory latency")}</div>"""
 
     s = 3 if mem_lat_img else 2   # STREAM section number
     return f"""
 <div class="section gpu-section" id="gpu-{gpu_name}">
   <h2>GPU: {gpu_name} <span style="font-size:0.85rem;font-weight:400;color:#666">({n} config{"s" if n != 1 else ""})</span></h2>
 
-  <h3>1. CPU Performance (sysbench prime, 30 s)</h3>
+  <h3>1. CPU Performance (sysbench prime, 30 s) <span class="desc">integer prime-number generation — measures IPC, scheduler, and single-core clock</span></h3>
   <div class="charts">
     {img_tag(cpu_single_img, "CPU single-thread")}
     {img_tag(cpu_all_img, "CPU multi-thread")}
@@ -806,16 +806,16 @@ def _gpu_section_html(gpu_name: str, gpu_configs: list[Config]) -> str:
 
   {mem_lat_section}
 
-  <h3>{s}. Memory Bandwidth — STREAM</h3>
+  <h3>{s}. Memory Bandwidth — STREAM <span class="desc">four kernels (Copy/Scale/Add/Triad) stress the memory controller at different access patterns</span></h3>
   <div class="charts">{img_tag(stream_img, "STREAM")}</div>
 
-  <h3>{s+1}. GPU ↔ CPU Memory Bandwidth</h3>
+  <h3>{s+1}. GPU ↔ CPU Memory Bandwidth <span class="desc">PCIe transfer speed between host RAM and GPU VRAM; bottlenecked by the interconnect, not the GPU itself</span></h3>
   <div class="charts">
     {img_tag(gpu_pcie_img, "GPU PCIe BW")}
     {img_tag(gpu_d2d_img, "GPU D2D BW")}
   </div>
 
-  <h3>{s+2}. GPU Compute — MatMul (100 iterations)</h3>
+  <h3>{s+2}. GPU Compute — MatMul (100 iterations) <span class="desc">FP16 4096³ matrix multiply repeated 100×; lower latency means more GPU FLOPS or better memory subsystem</span></h3>
   <div class="charts">{img_tag(gpu_matmul_img, "GPU matmul")}</div>
 
   {nccl_html}
