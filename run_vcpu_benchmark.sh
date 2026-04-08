@@ -199,6 +199,8 @@ if [[ "${GPU_COUNT:-0}" -gt 1 ]]; then
     fi
 
     NCCL_ALGO=Ring NCCL_PROTO=Simple \
+    HSA_NO_SCRATCH_RECLAIM=1 \
+    NCCL_P2P_DISABLE=1 \
     numactl $NUMACTL_ARGS \
         ./build/all_reduce_perf \
             -b 8 -e "$NCCL_MAX_MSG" -f 2 \
