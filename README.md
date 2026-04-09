@@ -223,6 +223,144 @@ NUMA node than the GPUs' PCIe attachment, coordination overhead increases latenc
 message sizes, raising the point at which bandwidth saturates. The average bus bandwidth across
 all sizes is a useful single-number summary of collective performance.
 
+---
+
+## Troubleshooting: low PCIe H2D/D2H bandwidth on newer GPUs
+
+### Symptom
+
+A newer GPU (e.g. RTX 5090) shows H2D/D2H bandwidth of ~5 GB/s inside the VM while older GPUs
+(e.g. RTX 4090/4080) on the same benchmark show ~22–26 GB/s. Device-to-device (internal memory)
+bandwidth is unaffected and correctly higher on the newer card.
+
+### Cause
+
+The PCIe link trained at a degraded speed on the host — in the case observed, the GPU fell back
+to **PCIe Gen 1 (2.5 GT/s)** despite the card being capable of Gen 5 (32 GT/s). PCIe Gen 1 ×16
+gives ~4 GB/s bidirectional, which matches the symptom exactly. This is a host-side issue, not
+a VM configuration issue.
+
+This can happen with newer GPU architectures (e.g. Blackwell/RTX 50 series) on older server
+platforms where the BIOS uses a conservative compatibility default for link speed training.
+
+### Diagnosis
+
+On the **host**, check the negotiated PCIe link speed for the GPU:
+
+```bash
+sudo lspci -vv -s <gpu_bdf> | grep -i "lnk"
+```
+
+Look for `LnkSta:`. A degraded link will show `(downgraded)`:
+
+```text
+LnkSta: Speed 2.5GT/s (downgraded), Width x16
+```
+
+Also note `LnkCtl2: Target Link Speed:` — if this is set to 2.5GT/s by the BIOS, the link
+will train to Gen 1 on every boot.
+
+### `setpci` register reference
+
+PCIe link control lives inside the PCIe capability structure in config space. `setpci` uses the
+symbolic alias `CAP_EXP` to locate it automatically. The syntax is:
+
+```text
+setpci -s <BDF> CAP_EXP+<offset>.<width>=<value>
+```
+
+| Part        | Meaning                                                                  |
+|-------------|--------------------------------------------------------------------------|
+| `CAP_EXP`   | Resolved by walking the capability list — no need to know the raw offset |
+| `+<offset>` | Byte offset within the PCIe capability structure (see table below)       |
+| `.<width>`  | `b` = byte (8-bit), `w` = word (16-bit), `l` = long (32-bit)             |
+| `=<value>`  | Hex value to write                                                       |
+
+**Relevant PCIe capability offsets:**
+
+| Offset  | Register                   | Notes                                 |
+|---------|----------------------------|---------------------------------------|
+| `+0x0C` | Link Capabilities (LnkCap) | Max speed/width — read-only           |
+| `+0x10` | Link Control (LnkCtl)      | Active control — bit 5 = Retrain Link |
+| `+0x12` | Link Status (LnkSta)       | Current negotiated speed/width        |
+| `+0x30` | Link Control 2 (LnkCtl2)   | Target speed for next retrain         |
+
+**Link Control 2 (`+0x30`) bits [3:0] — target link speed:**
+
+| Value  | Speed     | Generation  |
+|--------|-----------|-------------|
+| `0x1`  | 2.5 GT/s  | PCIe Gen 1  |
+| `0x2`  | 5 GT/s    | PCIe Gen 2  |
+| `0x3`  | 8 GT/s    | PCIe Gen 3  |
+| `0x4`  | 16 GT/s   | PCIe Gen 4  |
+| `0x5`  | 32 GT/s   | PCIe Gen 5  |
+
+**Link Control (`+0x10`) bit 5 (`0x0020`) — Retrain Link:** self-clearing bit that drops the
+link and re-negotiates at the target speed set in LnkCtl2. Some hardware auto-retrains when
+LnkCtl2 changes; others require this bit to be set explicitly.
+
+### Solution 1: force link retrain (immediate, temporary)
+
+Set the target speed and trigger a retrain. The two-step sequence works on all hardware:
+
+```bash
+# Set target speed to Gen 5 (use 0x0004 for Gen 4, 0x0003 for Gen 3, etc.)
+sudo setpci -s <gpu_bdf> CAP_EXP+0x30.w=0x0005
+# Trigger the retrain
+sudo setpci -s <gpu_bdf> CAP_EXP+0x10.w=0x0020
+```
+
+After retraining, verify the new speed with `lspci -vv` again. The link should train up to the
+highest speed both the GPU and the upstream root port support.
+
+> **Warning:** do not retrain while the GPU is in use by a VM. The link briefly drops during
+> renegotiation, which will crash or hang the guest. Only retrain before the VM starts.
+
+### Solution 2: make it persistent
+
+Add the retrain command to `/etc/rc.local` or a systemd oneshot service on the host so it
+runs on every boot before the VM starts:
+
+```ini
+# /etc/systemd/system/pcie-retrain-gpu.service
+[Unit]
+Description=Retrain PCIe link for GPU passthrough
+Before=libvirtd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/setpci -s <gpu_bdf> CAP_EXP+0x30.w=0x0060
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now pcie-retrain-gpu.service
+```
+
+### Platform ceiling
+
+If after retraining the link is still marked `(downgraded)`, the upstream PCIe root port may
+not support the GPU's maximum speed. For example, AMD EPYC Rome (Starship/Matisse) platforms
+support PCIe 4.0 (16 GT/s) only. An RTX 5090 (PCIe 5.0 capable) will therefore top out at
+Gen 4 speeds (~22–26 GB/s H2D/D2H), matching a 4090 on the same platform.
+
+To identify the upstream root port and its maximum link speed:
+
+```bash
+# Find bridges upstream of the GPU's bus
+sudo lspci -D | grep "root port\|pci bridge"
+# Then inspect the bridge whose secondary bus matches the GPU's bus number
+sudo lspci -vv -s <bridge_bdf> | grep -i "lnkcap\|lnksta"
+```
+
+`LnkCap: Speed 16GT/s` on the root port confirms a PCIe 4.0 platform ceiling. Reaching Gen 5
+requires a newer server CPU (e.g. EPYC Genoa or Intel Sapphire Rapids and later).
+
+---
+
 **AMD-specific notes:**
 
 - `HSA_NO_SCRATCH_RECLAIM=1` is required on MI350X (and possibly other recent AMD GPUs) to
