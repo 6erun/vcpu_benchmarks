@@ -1,0 +1,7 @@
+_results/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

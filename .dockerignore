@@ -1,0 +1,15 @@
+.git
+_results/
+results/
+*.html
+*.pdf
+*.csv
+bandwidthTest
+stream
+mem_latency
+build/
+nccl-tests/
+rccl-tests/
+.venv/
+__pycache__/
+*.pyc
