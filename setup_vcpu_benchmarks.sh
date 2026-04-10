@@ -67,10 +67,16 @@ if [[ "$GPU_VENDOR" == "nvidia" ]]; then
                 echo "ERROR: cuda samples root not found after installing nvidia-cuda-samples" >&2
                 exit 1
             fi
+            # Detect the GPU's SM version so the binary is compiled natively for
+            # the actual hardware. Without this, make defaults to a set of common
+            # architectures that may not include newer GPUs (e.g. SM_120 Blackwell),
+            # causing CUDA to fall back to a PTX JIT path that caps PCIe bandwidth.
+            GPU_SM=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '.')
+            echo "Detected GPU compute capability: sm_${GPU_SM}"
             cp -r "$SAMPLES_ROOT" /tmp/cuda-samples
-            make -C /tmp/cuda-samples/Samples/1_Utilities/bandwidthTest -j"$(nproc)"
+            make -C /tmp/cuda-samples/Samples/1_Utilities/bandwidthTest -j"$(nproc)" SMS="${GPU_SM}"
             cp /tmp/cuda-samples/bin/x86_64/linux/release/bandwidthTest .
-            echo "bandwidthTest built OK"
+            echo "bandwidthTest built OK (sm_${GPU_SM})"
         fi
     else
         echo "bandwidthTest already present, skipping"
